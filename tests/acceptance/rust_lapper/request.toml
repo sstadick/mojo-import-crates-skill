@@ -1,0 +1,37 @@
+[source]
+kind = "crates.io"
+name = "rust-lapper"
+version = "=1.3.0"
+checksum = "5aafed57460ca80eb88c33989af3a31348dbde8e68f86f4fe2107c1a5fcd55b8"
+
+[request]
+public_types = ["Interval", "Lapper"]
+public_operations = [
+  "Interval::intersect",
+  "Interval::overlap",
+  "Lapper::new",
+  "Lapper::insert",
+  "Lapper::len",
+  "Lapper::is_empty",
+  "Lapper::cov",
+  "Lapper::set_cov",
+  "Lapper::iter",
+  "Lapper::merge_overlaps",
+  "Lapper::intersect",
+  "Lapper::union",
+  "Lapper::union_and_intersect",
+  "Lapper::depth",
+  "Lapper::count",
+  "Lapper::find",
+  "Lapper::seek",
+]
+review_low_level_helpers = ["lower_bound", "bsearch_seq", "bsearch_seq_ref"]
+
+[specialization]
+coordinate = "usize"
+value = "u32"
+
+[adaptations]
+find = "lazy-iterator"
+seek = "lazy-iterator-with-reusable-cursor"
+depth = "lazy-iterator"

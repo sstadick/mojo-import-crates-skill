@@ -1,0 +1,7 @@
+interface:
+  display_name: "Rust to Mojo Bindings"
+  short_description: "Generate tested Rust bindings for Pixi Mojo"
+  default_prompt: "Use $bind-rust-to-mojo to bind <crate source> into this Pixi Mojo project, exposing <API>; inspect the crate, ask me to resolve every unresolved specialization choice (including type and const generics) or material API ambiguity, then generate, install, and test the binding end to end."
+
+policy:
+  allow_implicit_invocation: true

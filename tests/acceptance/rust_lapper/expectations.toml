@@ -1,0 +1,37 @@
+[generation]
+resolved_checksum_must_match = true
+fresh_bridge_from_resolved_source = true
+fresh_mojo_wrappers_from_hir_and_manifest = true
+uses_generic_integrator = true
+copies_crate_specific_fixture = false
+idempotent_regeneration = true
+
+[behavior]
+import_without_include_flag = "from rust_lapper import Interval, Lapper"
+construct_lapper = true
+len_and_is_empty = true
+preserve_interval_values = true
+half_open_queries = true
+coverage_and_set_cov = true
+count = true
+find_lazy = true
+seek_lazy_with_reusable_cursor = true
+depth_lazy = true
+insert = true
+merge_overlaps = true
+union = true
+intersect = true
+union_and_intersect_named_result = true
+iterator_early_drop = true
+move_only_ownership_and_destruction = true
+
+[verification]
+rust_bridge_tests = true
+mojo_integration_tests = true
+value_layout_tests_on_both_sides = true
+panic_cannot_cross_c_abi = true
+repeat_execution_catches_double_free = true
+direct_binary_outside_pixi_run = true
+complete_export_report = true
+low_level_helpers_are_exported_or_explicitly_deferred = true
+performance_changes_are_documented = true

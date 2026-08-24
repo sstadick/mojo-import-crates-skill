@@ -1,0 +1,362 @@
+---
+name: bind-rust-to-mojo
+description: Generate, integrate, build, and test a new Rust-to-Mojo binding for an exact crates.io or immutable Git Rust crate in an existing Pixi Mojo project; local crates may be inspected but packaging is currently deferred. Use for Rust APIs that must become ordinary Mojo imports, including APIs needing explicit generic specialization or semantic FFI adaptation. Do not use for Mojo-to-Rust bindings.
+---
+
+# Bind Rust to Mojo
+
+Create a binding for the crate the user requested. Inspect that crate and
+generate a new semantic FFI projection; do not select a checked example or
+rename an earlier generated binding.
+
+This tooling is experimental. The crate-agnostic path has been exercised on
+multiple unrelated crates, but the Diplomat HIR backend and semantic projection
+may still need implementation work for a new Rust API shape. Do not call a run
+successful until that invocation's newly generated Rust and Mojo tests pass.
+
+## Invariants
+
+- Work inside the existing Pixi Mojo project supplied by the user.
+- Never modify the upstream Rust crate.
+- Resolve the exact requested source with `cargo metadata` before inspecting or
+  generating from it.
+- Generate a companion Rust crate with a stable C ABI and a separate ergonomic
+  Mojo package.
+- Never copy, rename, substitute into, or install a crate-specific fixture,
+  reference bridge, or previously generated output. Test fixtures are evidence,
+  not production inputs.
+- Classify each relevant public API item as `DIRECT`, `ADAPTED`,
+  `MONOMORPHIZED`, `OPAQUE`, or `SKIPPED`; record a reason for every skip.
+- Never make a final choice for an unresolved Rust generic. Reuse a compatible
+  `binding.toml` choice, accept the user’s explicit choice, or ask the user.
+- Ask before an FFI adaptation that materially changes observable semantics.
+- Never expose native Rust layout unless the generated representation is
+  independently FFI-safe. Catch Rust panics before they cross the C ABI.
+- Treat the manifest's closed, exact `[tools]` table as a verified claim: bind
+  it to the ABI report, companion Cargo graph, and target Mojo compiler rather
+  than copying version strings without checking them.
+- Preserve existing Pixi configuration and let Pixi update `pixi.lock`.
+- Do not vendor build products, temporary source trees, or environment-specific
+  paths.
+
+For Mojo source, use the installed `mojo-syntax` skill and compile against the
+project’s pinned Mojo version. Consult current official Pixi documentation and
+the installed Pixi CLI for package/build syntax rather than relying on recalled
+commands.
+
+Read [Decision 0001](plans/decisions/0001-general-purpose-generation.md) when
+changing generation boundaries or considering reuse of checked output. Read
+[Decision 0002](plans/decisions/0002-pixi-artifact-command.md) when selecting a
+Pixi artifact workflow. Read
+[Decision 0003](plans/decisions/0003-out-of-tree-diplomat-backend.md) before
+changing the Diplomat/backend boundary. Read
+[Decision 0004](plans/decisions/0004-semantic-projection-source.md) before
+changing the regeneration or semantic-source boundary. Read the rust-lapper files under
+`tests/acceptance/` only when running that explicit acceptance scenario. Do not
+load `original_plan.md` during ordinary binding work; it is historical
+and contains superseded vertical-slice choices.
+
+Set `<skill-root>` to the directory containing this `SKILL.md`. Read the
+[binding manifest schema](references/binding-manifest.md) before generating or
+regenerating a binding.
+
+## Workflow
+
+### 1. Validate the target
+
+Locate the project root and verify that it contains `pixi.toml` and a Mojo
+package shape compatible with its pinned tools. Record the initial working-tree
+state. Require one unambiguous exact Mojo compiler constraint so generated
+`.mojoc` files use the same compiler as the root package. Support Linux and
+Apple silicon macOS; clearly distinguish platforms actually tested from
+platforms only generated for.
+
+### 2. Resolve the source
+
+Accept exactly one source form:
+
+- crates.io package plus exact version;
+- Git URL plus immutable revision;
+- local crate path.
+
+Resolve all three forms with the bundled resolver and save its JSON outside the
+target repository. Representative invocations are:
+
+```text
+python3 <skill-root>/scripts/resolve_rust_crate.py --registry NAME@VERSION
+python3 <skill-root>/scripts/resolve_rust_crate.py --git URL --rev FULL_COMMIT --package NAME
+python3 <skill-root>/scripts/resolve_rust_crate.py --path PATH [--package NAME]
+```
+
+Pass each requested Cargo feature with `--feature`; use
+`--no-default-features` only when requested. Record the checksum or immutable
+revision/fingerprint, dependency graph, and resolved source path. A local crate
+must ultimately be self-contained in the package source graph; stop with a
+packaging limitation if it cannot be made so safely.
+
+### 3. Design the projection with the user
+
+Inspect public source, rustdoc, examples, and tests. If the user did not name an
+API scope, ask what types and operations matter before treating the entire
+public surface as requested. State how feature-gated items and trait APIs enter
+the scope. Produce an export plan and identify generic parameters and semantic
+mismatches.
+
+For every generic specialization:
+
+1. reuse a compatible value already recorded in `binding.toml`;
+2. otherwise use a concrete type explicitly supplied in the current request;
+3. otherwise explain the relevant evidence and ask the user to choose.
+
+Examples can support a recommendation but cannot provide consent. Do not
+generate Cartesian products of plausible types.
+
+Ask for concrete exposed type, const, and lifetime-policy choices, and for any
+narrowing of a generic public method. Do not ask about an incidental generic
+container or iterator type used only to implement a Mojo shape the user already
+approved.
+
+Prefer adaptations that preserve behavior: opaque handles for layout-unsafe
+objects, explicit value conversions for structs, named structs for tuple
+returns, UTF-8 representations for strings, and explicit error APIs for
+fallible functions. Prefer lazy Rust-backed Mojo iterators when a Rust iterator
+can safely expose `next`; materialize a collection only when required and with
+the user’s agreement if semantics or performance materially change.
+
+Mojo 1.0 has no supported runtime-global storage for an `OwnedDLHandle`.
+Opaque wrappers retain their handle, but a direct free/static/value call has no
+owner in which to retain one. For a high-frequency API of that shape, project
+an explicit opaque binding context and expose the operations as its methods.
+If preserving top-level calls matters more than the repeated scoped `dlopen`,
+record that performance effect as a material adaptation and ask the user.
+
+### 4. Write the semantic inputs
+
+Create the complete binding in a temporary staging directory outside the target
+project:
+
+```text
+<staging>/<binding-id>/binding.toml
+```
+
+For a new binding, derive both `binding.toml` and `ffi/src/lib.rs` from the exact
+resolved crate; never seed either from another binding. For an unchanged
+binding, copy its own reviewed manifest and bridge into staging, validate them
+against the newly resolved Cargo graph and each other, and preserve both
+byte-for-byte. Do not ask an agent to resynthesize an unchanged bridge.
+
+If source identity, features, requested scope, specialization, or adaptation
+changed, re-inspect the upstream crate, revise the manifest and bridge
+explicitly, then regenerate the mechanical ABI and Mojo outputs. The manifest
+is the audit record; the bridge is the executable implementation of those
+decisions. Neither is a reusable template for another crate.
+
+Record exact source identity and features, package names, tool versions,
+user-approved specializations and adaptations, plus every export status and
+reason. Keep it deterministic: omit timestamps, usernames, temporary paths,
+and environment prefixes.
+
+Write exactly the six required `[tools]` keys documented in the manifest
+schema. Use bare exact semver-like values. The ABI backend report supplies the
+backend/core evidence; the companion Cargo graph and target Pixi manifest must
+independently agree with the remaining build-tool claims.
+
+### 5. Create or validate the Rust bridge
+
+Generate the companion crate at:
+
+```text
+<staging>/<binding-id>/ffi/
+```
+
+For a new or semantically changed binding, write one self-contained source file
+with an inline `#[diplomat::bridge]` module, derived from the resolved API and
+manifest. For an unchanged binding, validate the preserved file instead. The
+current backend does not inline an external `mod ffi;` tree.
+Generate deterministic, crate-namespaced C symbols. Use opaque ownership
+handles, explicit destructors, panic barriers, and status/out-parameter returns
+where appropriate. Ensure iterator state and owner mutation cannot invalidate
+each other; `next` must not return a Rust reference whose lifetime escapes the
+call.
+
+With the pinned Diplomat 0.16.1 macros, put the default namespaced
+`#[diplomat::abi_rename = "rust_mojo__<binding>__{0}"]` on the bridge module.
+In particular, do not rely on a function-level `abi_rename` for a free
+function: the HIR accepts that spelling but the proc macro can leave the
+attribute behind and make the companion crate fail to compile. Method-level
+overrides remain available when the inherited name would collide.
+
+Format and test the bridge with an external temporary `CARGO_TARGET_DIR` so no
+`target/` appears in vendored source.
+
+Declare `diplomat` and `diplomat-runtime` as non-optional root dependencies at
+the exact versions recorded in `[tools]`. Generate `Cargo.lock` normally, then
+verify its companion root resolves unambiguously to the selected registry
+`diplomat` and `diplomat-runtime` packages and that the selected `diplomat`
+resolves to the recorded `diplomat_core`. Allow unrelated versions elsewhere
+in an upstream dependency graph. Keep this audit in addition to the exact
+upstream crate source/checksum/feature audit.
+
+Give every generated source file a deterministic header naming the resolved
+crate/version, manifest, generator, Diplomat, and Mojo versions. Generate
+cross-language size, alignment, and field-offset tests for each value struct.
+
+### 6. Generate raw and ergonomic Mojo layers
+
+Run the experimental `diplomat-gen-mojo` backend over the newly generated
+bridge. Extend the backend when the requested Diplomat HIR is expressible but
+not yet implemented. If it cannot safely represent an API, report that item as
+unsupported instead of substituting code from an acceptance fixture.
+
+```text
+CARGO_TARGET_DIR=<temporary-target> cargo run --locked \
+  --manifest-path <skill-root>/crates/diplomat-gen-mojo/Cargo.toml -- \
+  <staging>/<binding-id>/ffi/src/lib.rs \
+  --output <staging>/<binding-id>/mojo/<mojo-package>/_ffi.mojo \
+  --report <staging>/<binding-id>/abi-report.json \
+  --deny-unsupported
+```
+
+Keep layers separate:
+
+```text
+<staging>/<binding-id>/mojo/<mojo-package>/
+  __init__.mojo
+  _ffi.mojo
+  _runtime.mojo
+  _types.mojo
+  _wrappers.mojo
+```
+
+The raw layer must mirror the exact C ABI. The current backend emits a schema
+and signature layer, so prove each ABI shape with real Rust/Mojo call and layout
+tests before treating it as exact. The public layer supplies move-only RAII
+ownership, value conversions, error handling, and idiomatic lazy iteration.
+For Mojo 1.0.0 dynamic loading, keep every call boundary to scalars and
+pointers: scalarize a slice as a private address-plus-length pair, pass value
+structs by pointer, and return aggregate values through caller-owned out
+pointers. Reject an ABI that passes or returns a C aggregate by value even if it
+type-checks; real calls can be mislowered. `OwnedDLHandle.get_function` in that
+compiler is parameterized by the return type and infers arguments at the call.
+This also excludes Diplomat's two-word owned-slice carrier. Project an owned
+collection as an opaque Rust owner with scalar/pointer accessors and a generated
+destructor instead of wrapping `DiplomatOwnedSlice` directly.
+On a later compiler with an explicit dynamic function type, declare `abi("C")`
+and add a real ABI regression before relaxing this rule. Resolved function
+pointers must not outlive their `OwnedDLHandle`.
+
+Compile a minimal loader call with the target project's pinned compiler before
+emitting the full wrapper. `OwnedDLHandle.get_function` generic syntax has
+changed between Mojo releases; follow the installed compiler and `mojo-syntax`
+skill, not an example written for a different version.
+
+Then run the closed semantic-wrapper generator. It requires an explicit
+`[[mojo.types]]` entry for every ABI struct, enum, and opaque type, and an
+explicit `[[mojo.functions]]` entry for every ABI function; internal wire
+carriers must be marked `skip` with a reason rather than disappearing.
+
+```text
+python3 <skill-root>/scripts/generate_mojo_package.py \
+  --binding <staging>/<binding-id>/binding.toml \
+  --report <staging>/<binding-id>/abi-report.json \
+  --output-dir <staging>/<binding-id>/mojo/<mojo-package>
+```
+
+This creates `_runtime.mojo`, `_types.mojo`, `_wrappers.mojo`, and
+`__init__.mojo`, validates every report-declared symbol and exact function
+signature against `_ffi.mojo`, and replaces only the raw file's backend header
+with the complete deterministic source/manifest/tool provenance header. Pass
+`--ffi <path>` when the raw file is not already at the output path. Treat any
+manifest/report mismatch as a semantic error; do not infer a public role from
+an ABI name. Rerun the command with `--check` during the idempotency proof.
+
+Do not make `CONDA_PREFIX` the only runtime lookup. Prefer executable- or
+loader-relative lookup for the installed `$PREFIX/lib` library, with an
+explicit override and environment-prefix lookup only as development fallbacks.
+For Linux, resolve the real executable through `/proc/self/exe`; for macOS, use
+`_NSGetExecutablePath` and canonicalize it. Also canonicalize `argv[0]` or its
+`PATH` match as a fallback so basename and symlink launches do not make library
+lookup relative to the current working directory.
+
+### 7. Integrate with Pixi generically
+
+Use `scripts/integrate_binding.py` to integrate the paths and metadata described
+by this invocation’s `binding.toml`. The integrator may perform deterministic
+Pixi/package mutations, but it must not contain crate names, APIs, bridge
+sources, Mojo wrappers, or fixture selection logic.
+
+Before integration, require the project's one exact Mojo compiler constraint,
+normalizing either `=VERSION` or `==VERSION`, to equal
+`[tools].mojo_version`. The integrator rechecks this, the closed tool table, and
+the Cargo manifest/lock provenance before it mutates the project; treat a
+failure as a stale or dishonest binding input and regenerate or align the
+project rather than bypassing the check.
+
+The integrator also reruns the semantic wrapper generator in `--check` mode.
+Missing or edited `abi-report.json`, raw ABI drift, incomplete export mappings,
+stale wrappers, and unexpected `.mojo` modules must therefore fail before any
+project mutation.
+
+```text
+python3 <skill-root>/scripts/integrate_binding.py \
+  --project <project-root> \
+  --binding-root <staging>/<binding-id> \
+  --resolution @<resolution.json> \
+  --artifact-mode <build-or-publish>
+```
+
+Select the mode from the project-compatible Pixi executable's actual help:
+`build` for the older `pixi build --output-dir` workflow and `publish` for the
+newer multi-package `pixi publish --target-dir` workflow. The integrator's
+`requires-pixi` inference is a conservative fallback, not a substitute for
+checking the selected executable.
+
+Generate a project-scoped bindings source package under
+`vendor/rust-bindings/`. Build companion crates with Cargo’s locked release
+mode, install shared libraries below `$PREFIX/lib`, and precompile Mojo packages
+below `$PREFIX/lib/mojo`. Preserve the target project’s existing backend and
+configuration. Package correctness must not depend on convenience Pixi tasks.
+
+### 8. Build, test, and repair
+
+Let the project-compatible Pixi executable update its lockfile, build source
+packages, and install the generated binding. Inspect `pixi build --help` and
+`pixi publish --help`. In `build` mode, export the aggregate dependency first
+with `pixi build --manifest-path vendor/rust-bindings/pixi.toml --output-dir
+...`, then export the root package with `pixi build --output-dir ...`. In
+`publish` mode, use `pixi publish --target-dir ...` to build the workspace in
+dependency order. Exercise the reported `artifact_commands` and `pixi install`,
+then prove an external prefix can install the complete artifact set. Run:
+
+1. Rust tests for upstream-crate → companion-bridge behavior;
+2. Mojo tests for companion-bridge → ergonomic-package behavior.
+
+Each declared Rust integration-test target must contain an actual `#[test]`,
+and the packaged build must fail when Cargo lists zero tests; comments or string
+literals that merely spell `#[test] fn` are not evidence.
+
+Also verify import without `-I`, ownership/destruction, iterator exhaustion and
+early destruction when relevant, panic/error behavior, and direct execution of
+an installed binary without `pixi run`. Fix generation or backend gaps within
+scope and repeat. If a safe binding remains impossible, stop with a precise
+unsupported report; do not present generated-but-uncompiled code as success.
+
+### 9. Prove regeneration and report
+
+Hash or diff generated inputs, rerun from the same manifest, and require no
+source or Pixi diff. Then report source identity, concrete specializations,
+export classification counts, adaptations, tested platforms, import/test
+commands, and deferred APIs.
+
+Use the integrator's `--check` mode on the regenerated staging tree; it must
+report no changes.
+
+On failure after mutation, retain useful diagnostic source and report the
+failing phase, exact error, changed files, lockfile status, and next action.
+
+## Acceptance scenarios
+
+Acceptance cases constrain the general workflow; they do not provide generated
+code. The initial case is declared under `tests/acceptance/rust_lapper/` and
+must travel through the same resolve → inspect → manifest → bridge → backend →
+wrapper → generic integration → test path as every other crate.

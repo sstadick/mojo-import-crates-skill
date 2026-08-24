@@ -1,0 +1,22 @@
+[package]
+name = "diplomat-gen-mojo"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Experimental Diplomat HIR to Mojo raw-ABI generator"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "diplomat_gen_mojo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "diplomat-gen-mojo"
+path = "src/main.rs"
+
+[dependencies]
+diplomat_core = { version = "=0.16.1", features = ["hir", "pretty-print"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+syn = { version = "3.0", features = ["full"] }

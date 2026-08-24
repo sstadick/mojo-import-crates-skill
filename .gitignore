@@ -1,0 +1,11 @@
+**/target/
+**/.pixi/
+*.so
+*.dylib
+*.dll
+*.mojoc
+*.mojopkg
+*.conda
+.DS_Store
+__pycache__/
+*.pyc
