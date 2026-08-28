@@ -1,9 +1,10 @@
 # Rust → Mojo bindings
 
 This repository is an experimental Codex skill for generating bindings from a
-Rust crate into an existing Pixi-based Mojo project. The product is deliberately
-crate-agnostic: each invocation inspects the requested crate and creates a new
-FFI projection for that crate.
+Rust crate into either an existing Pixi-based Mojo project or a new standalone
+`pixi-build-mojo` library repository. The product is deliberately crate-agnostic:
+each invocation inspects the requested crate and creates a new FFI projection
+for that crate.
 
 The intended result is an ordinary Mojo import backed by generated, vendored
 source—without modifying the Rust crate, asking the user to hand-write C glue,
@@ -19,18 +20,23 @@ real Rust `cdylib` calls and normal Mojo imports; both also passed clean
 Hat-style Pixi installation, two-package artifact publication,
 independent-prefix installation, and direct execution outside `pixi run`. No
 production script selects either crate or copies their proof output. A third
-fresh-source check against `strsim` exercised unrelated free functions with
-UTF-8 inputs and scalar results through the same backend and wrapper generator.
-The repository automates component and contract regressions; the full external
-artifact run remains a manual acceptance procedure until a portable harness is
-checked in.
+fresh-source check against `strsim` 0.11.1 exercised unrelated free functions
+with UTF-8 inputs and scalar results through the same backend and wrapper
+generator. On Apple-silicon macOS it also completed the new standalone-library
+path: public facade tests and examples, immutable Git consumption, strict
+generated docs and doctests, Hugo rendering, dual artifact publication, clean
+aggregate payload, fresh-prefix installation, and direct execution from an
+unrelated directory. The repository automates component and contract
+regressions; the full external artifact run remains a manual acceptance
+procedure until a portable harness is checked in.
 
 That demonstrates the general workflow, not universal Rust API coverage.
 Expect Codex to extend or repair the semantic projection or HIR backend when a
 new crate needs a Rust shape outside the current scalar/pointer, value,
 opaque-owner, scalar-status/out-value, scalarized-input, string-copy,
-optional-via-presence, mutable-span-fill, and lazy-iterator surface. A run is successful only when its newly generated Rust and Mojo
-integration tests pass; generated files alone do not constitute support.
+optional-via-presence, mutable-span-fill, and lazy-iterator surface. A run is
+successful only when its newly generated Rust and Mojo integration tests pass;
+generated files alone do not constitute support.
 
 Mojo 1.0 does provide process-global runtime storage through
 `std.ffi._Global`, the mechanism `std.python` uses for the CPython handle.
@@ -128,6 +134,45 @@ resolve exact Rust source
   → integrate the generated packages with integrate_binding.py
   → let Pixi install, build, and test both sides
 ```
+
+## Create a standalone library
+
+Ask for standalone output when the binding should be a reusable Git dependency
+rather than an addition to an existing application:
+
+```text
+Use $bind-rust-to-mojo to create a standalone Mojo library repository for
+<crate>@<exact-version>. Expose <types and operations>. Include a public Mojo
+facade, representative standalone examples, downstream Git-dependency proof,
+cross-platform CI, an example-first README and docs site, strict API docstrings,
+and executable documentation examples. Do not create a remote or choose a
+license without asking me.
+```
+
+Standalone mode first creates a generic, valid Pixi/CI/docs shell with
+`scripts/scaffold_standalone_library.py`, then sends the requested crate through
+the same resolve → bridge → backend → wrapper → integration path as existing
+projects. The generic shell is reusable; the public facade, tests, examples,
+README prose, safety guidance, and task-oriented documentation must be derived
+from the newly inspected crate and executed before the repository is complete.
+
+The resulting repository is designed to prove all of these properties:
+
+- a fresh checkout installs with the locked Pixi environment;
+- applications and other `pixi-build-mojo` packages can depend on an immutable
+  Git revision;
+- representative examples and public API tests compile and run;
+- the root library and generated Rust binding source package both publish;
+- public Mojo API docs have complete structured docstrings and executable
+  examples; and
+- GitHub CI covers Linux x86-64, Linux ARM64, and Apple-silicon macOS when those
+  platforms are selected.
+
+Repository creation does not imply permission to choose a license, create or
+configure a hosted repository, add a remote, push, open a pull request, or
+enable Pages. The skill performs those operations only when explicitly asked.
+See [`references/standalone-library.md`](references/standalone-library.md) for
+the complete mode contract.
 
 Successful generation should add approximately:
 

@@ -1,0 +1,23 @@
+"""Contains the temporary API proof for the standalone repository shell.
+
+Delete this module after replacing its function with the reviewed public facade
+for Rust's `@RUST_CRATE@` crate.
+"""
+
+
+def import_ready() -> Bool:
+    """Confirms that the scaffolded public package is available.
+
+    Returns:
+        `True` while the temporary scaffold proof is installed.
+
+    Example:
+        ```mojo {doctest="scaffold_import_ready" global=true}
+        from std.testing import assert_true
+        from @MOJO_PACKAGE@ import import_ready
+        ```
+        ```mojo {doctest="scaffold_import_ready"}
+        assert_true(import_ready())
+        ```
+    """
+    return True

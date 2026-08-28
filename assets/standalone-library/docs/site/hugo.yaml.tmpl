@@ -1,0 +1,38 @@
+baseURL: @BASE_URL@
+languageCode: en-us
+title: @PACKAGE_NAME@
+disablePathToLower: true
+
+markup:
+  highlight:
+    noClasses: false
+
+module:
+  imports:
+    - path: github.com/imfing/hextra
+
+menu:
+  main:
+    - identifier: Guide
+      name: Guides
+      pageRef: /guide
+      weight: 1
+    - identifier: Docs
+      name: API
+      pageRef: /@MOJO_PACKAGE@
+      weight: 2
+    - name: Search
+      weight: 3
+      params:
+        type: search
+@HUGO_GITHUB_MENU@
+
+params:
+  search:
+    enable: true
+    type: flexsearch
+    flexsearch:
+      index: content
+  navbar:
+    displayTitle: true
+    displayLogo: false

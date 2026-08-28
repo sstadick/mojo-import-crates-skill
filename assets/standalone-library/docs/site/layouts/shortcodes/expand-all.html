@@ -1,0 +1,17 @@
+<script>
+function expandAll() {
+    var inputs = document.getElementsByTagName('details');
+    for (var i = 0; i < inputs.length; i++) {
+        inputs[i].open = true;
+    }
+}
+
+function collapseAll() {
+    var inputs = document.getElementsByTagName('details');
+    for (var i = 0; i < inputs.length; i++) {
+        inputs[i].open = false;
+    }
+}
+</script>
+<a onclick="expandAll()" style="cursor:pointer; text-decoration:none" title="Expand all">➕</a>&nbsp;
+<a onclick="collapseAll()" style="cursor:pointer; text-decoration:none" title="Collapse all">➖</a>

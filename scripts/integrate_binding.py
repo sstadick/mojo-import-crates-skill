@@ -2019,15 +2019,26 @@ def render_recipe(
                 "      then:",
                 f'        - install -m 755 "{target}/${{CARGO_BUILD_TARGET:+${{CARGO_BUILD_TARGET}}/}}release/lib{ffi_crate}.dylib" '
                 f'"$PREFIX/lib/lib{ffi_crate}.dylib"',
-                f'    - mojo precompile {mojo_source} -o "$PREFIX/lib/mojo/{mojo_package}.mojoc"',
+                (
+                    '    - MODULAR_CACHE_DIR="$SRC_DIR/.rust-mojo-cache" '
+                    f'mojo precompile {mojo_source} '
+                    f'-o "$PREFIX/lib/mojo/{mojo_package}.mojoc"'
+                ),
             ]
         )
         for mojo_test in spec["tests"]:
             command = (
+                'MODULAR_CACHE_DIR="$SRC_DIR/.rust-mojo-cache" '
                 f'MODULAR_HOME="$PREFIX/share/max" "$PREFIX/bin/mojo" run '
                 f"{binding_id}/{mojo_test}"
             )
             lines.append(f"    - {json.dumps(command)}")
+    # Mojo 1.0 mutates its installation prefix with cache, crash-reporting,
+    # and first-activation state. None belongs in the aggregate artifact.
+    lines.append(
+        '    - rm -rf "$PREFIX/share/max/cache/.mojo_cache" '
+        '"$PREFIX/share/max/crashdb" "$PREFIX/share/max/firstActivation"'
+    )
     extra_build = sorted(
         {
             dependency

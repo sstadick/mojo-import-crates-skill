@@ -1,0 +1,18 @@
+/* Keep API names readable in the navigation sidebar. */
+.hextra-scrollbar a {
+  overflow: hidden;
+  word-break: keep-all;
+}
+
+/* Let long Mojo signatures wrap instead of overflowing. */
+.hextra-code-block pre {
+  font-size: 1em;
+}
+
+.hextra-code-block:not(.no-wrap) pre {
+  text-wrap: auto;
+}
+
+.content :where(h1, h2, h3, h4):not(:where([class~="not-prose"], [class~="not-prose"] *)) code {
+  font-size: 100%;
+}

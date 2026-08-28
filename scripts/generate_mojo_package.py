@@ -2470,6 +2470,14 @@ def _null_fn[T: TrivialRegisterPassable]() -> T:
     return Pointer(to=zero).unsafe_bitcast[T]()[]
 
 
+# Mojo 1.0 can retain the initialized value of a stack local after a dynamic
+# foreign call mutates that local through an untracked pointer. Keep the reload
+# behind a non-inlined function boundary so result reads observe foreign writes.
+@no_inline
+def _reload_out[T: Copyable](ptr: Pointer[T, MutUntrackedOrigin]) -> T:
+    return ptr[].copy()
+
+
 # The shared library is opened once per process and kept in a named
 # compiler-runtime global, following the pattern std.python uses for the
 # CPython interpreter handle. Every C function pointer is resolved exactly
@@ -2896,12 +2904,16 @@ def _call_output(
                 f"    raise Error({json.dumps('unexpected FFI result status')})",
             ]
         )
+        if mapping.out_param is not None and (
+            policy.out_value or policy.value_fields
+        ):
+            lines.append("var _loaded_out = _runtime._reload_out(_out_ptr)")
         if policy.out_value:
             out_ty = _out_value_type(model, mapping)
             lines.append(
                 "return "
                 + _from_ffi_expr(
-                    model, out_ty, "_out", local_types=local_types
+                    model, out_ty, "_loaded_out", local_types=local_types
                 )
             )
         elif not policy.value_fields:
@@ -2915,7 +2927,7 @@ def _call_output(
                     model,
                     field["ty"],
                     (
-                        f"_out.{_mojo_abi_ident(field_name)}"
+                        f"_loaded_out.{_mojo_abi_ident(field_name)}"
                         if mapping.out_param is not None
                         else f"_result.{_mojo_abi_ident(field_name)}"
                     ),
@@ -2934,7 +2946,7 @@ def _call_output(
                         model,
                         field["ty"],
                         (
-                            f"_out.{_mojo_abi_ident(field_name)}"
+                            f"_loaded_out.{_mojo_abi_ident(field_name)}"
                             if mapping.out_param is not None
                             else f"_result.{_mojo_abi_ident(field_name)}"
                         ),
@@ -3220,9 +3232,12 @@ def _render_callable(
                 body_indent
                 + f"var _out = {_zero_ffi_expr(model, value_ty, mapping.abi_symbol + '.out')}"
             )
-            arguments.append(
-                "Pointer(to=_out).unsafe_origin_cast[MutUntrackedOrigin]()"
+            lines.append(
+                body_indent
+                + "var _out_ptr = Pointer(to=_out)"
+                ".unsafe_origin_cast[MutUntrackedOrigin]()"
             )
+            arguments.append("_out_ptr")
             keepalives.append("_ = Pointer(to=_out)")
             continue
         pre, expression, post = _prepare_call_argument(
@@ -3495,11 +3510,15 @@ def _render_opaque(model: Model, mapping: TypeMapping) -> list[str]:
             lines.extend(
                 [
                     f"        var _item = {_zero_ffi_expr(model, item_ty, mapping.abi_name + '.item')}",
+                    (
+                        "        var _item_ptr = Pointer(to=_item)"
+                        ".unsafe_origin_cast[MutUntrackedOrigin]()"
+                    ),
                     f"        var _status_value = {raw_status}(0)",
                     f"        var _next = _runtime._functions()[].{function['mojo_abi_alias']}",
                     "        _status_value = _next(",
                     "            _handle,",
-                    "            Pointer(to=_item).unsafe_origin_cast[MutUntrackedOrigin](),",
+                    "            _item_ptr,",
                     "        )",
                     "        _ = Pointer(to=_item)",
                     "        var _status = Int(_status_value)",
@@ -3518,7 +3537,8 @@ def _render_opaque(model: Model, mapping: TypeMapping) -> list[str]:
                 [
                     f"        if _status != {mapping.item_discriminant}:",
                     f"            raise Error({json.dumps('unexpected FFI iterator status')})",
-                    f"        return {_from_ffi_expr(model, item_ty, '_item')}",
+                    "        var _loaded_item = _runtime._reload_out(_item_ptr)",
+                    f"        return {_from_ffi_expr(model, item_ty, '_loaded_item')}",
                 ]
             )
         lines.extend(

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional standalone-library mode with a deterministic pixi-build-mojo
+  repository scaffold, Git-dependency consumer, cross-platform CI, strict API
+  documentation, executable examples, and GitHub Pages-ready site generation.
+- A standalone completion contract for API-specific README content, public
+  facade tests, examples, generated documentation, and hosted-operation
+  boundaries.
+
+### Fixed
+
+- Mojo 1.0 status/out wrappers now reload caller-owned result storage through a
+  non-inlined pointer boundary, preventing stale initialized values after
+  dynamically loaded Rust calls. Status/out iterators use the same safe reload.
+- Aggregate binding artifacts no longer package Mojo compiler caches,
+  crash-report state, or first-activation markers created during native tests.
+- The standalone docs scaffold now generates a function page and executes an
+  API doctest from a normal Mojo submodule, avoiding Modo's omission of
+  functions defined in `__init__.mojo`.
+
 ## [0.1.0] - 2026-08-28
 
 ### Added

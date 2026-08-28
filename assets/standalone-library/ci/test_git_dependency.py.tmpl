@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Build and run a downstream pixi-build-mojo package against a Git revision."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+FIXTURE = ROOT / "ci" / "git-consumer"
+SUPPORTED_PLATFORMS = ("linux-64", "linux-aarch64", "osx-arm64")
+COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def run(*command: str, cwd: Path) -> None:
+    subprocess.run(command, cwd=cwd, check=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--platform", required=True, choices=SUPPORTED_PLATFORMS)
+    parser.add_argument("--repository", type=Path, default=ROOT)
+    parser.add_argument("--revision")
+    parser.add_argument("--pixi", default=shutil.which("pixi") or "pixi")
+    args = parser.parse_args()
+
+    repository = args.repository.resolve()
+    requested_revision = args.revision or "HEAD"
+    try:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "--verify", f"{requested_revision}^{{commit}}"],
+            cwd=repository,
+            stderr=subprocess.PIPE,
+            text=True,
+        ).strip()
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"Cannot resolve Git commit {requested_revision!r} in {repository}"
+        ) from error
+    if COMMIT_RE.fullmatch(revision) is None:
+        raise SystemExit(f"Git did not resolve a full SHA-1 commit: {revision!r}")
+
+    with tempfile.TemporaryDirectory(prefix="@PACKAGE_NAME@-git-consumer-") as temporary:
+        consumer = Path(temporary)
+        shutil.copytree(
+            FIXTURE / "@MOJO_PACKAGE@_ci_consumer",
+            consumer / "@MOJO_PACKAGE@_ci_consumer",
+        )
+        shutil.copytree(FIXTURE / "tests", consumer / "tests")
+
+        manifest = (FIXTURE / "pixi.toml.in").read_text(encoding="utf-8")
+        manifest = manifest.replace("__CI_PLATFORM__", args.platform)
+        manifest = manifest.replace("__PROJECT_GIT__", repository.as_uri())
+        manifest = manifest.replace("__PROJECT_REV__", revision)
+        (consumer / "pixi.toml").write_text(manifest, encoding="utf-8")
+
+        run(args.pixi, "install", cwd=consumer)
+        run(args.pixi, "run", "t", cwd=consumer)
+
+
+if __name__ == "__main__":
+    main()

@@ -879,19 +879,38 @@ class SuccessfulGenerationTests(unittest.TestCase):
 
     def test_scalar_status_out_results_raise_before_reading_output(self) -> None:
         wrappers = self.files["_wrappers.mojo"]
+        runtime = self.files["_runtime.mojo"]
+        self.assertIn("@no_inline\ndef _reload_out[T: Copyable]", runtime)
+        self.assertIn("return ptr[].copy()", runtime)
         summary = section(wrappers, "    def summary", "    def validate")
         self.assertIn("raises -> _types.Summary", summary)
         self.assertIn("var _out = _ffi.PairOut", summary)
+        self.assertIn("var _out_ptr = Pointer(to=_out).unsafe_origin_cast", summary)
+        self.assertIn(
+            "_call(self._require_handle().unsafe_mut_cast[False](), _out_ptr)",
+            summary,
+        )
         self.assertIn("var _result = _ffi_call_result", summary)
         self.assertIn('raise Error("Rust summary panicked")', summary)
         self.assertIn(
-            "return _types.Summary(total=_out.total_value, matched=_out.matched_value)",
+            "var _loaded_out = _runtime._reload_out(_out_ptr)",
             summary,
         )
-        self.assertLess(summary.index("if Int(_result)"), summary.index("return _types.Summary"))
+        self.assertIn(
+            "return _types.Summary("
+            "total=_loaded_out.total_value, matched=_loaded_out.matched_value)",
+            summary,
+        )
+        self.assertLess(
+            summary.index("if Int(_result)"), summary.index("_runtime._reload_out")
+        )
+        self.assertLess(
+            summary.index("_runtime._reload_out"),
+            summary.index("return _types.Summary"),
+        )
         first = section(wrappers, "    def first", "    @staticmethod")
         self.assertIn("raises -> _types.Record", first)
-        self.assertIn("return _types.Record(_from_ffi=_out)", first)
+        self.assertIn("return _types.Record(_from_ffi=_loaded_out)", first)
         validate = section(wrappers, "    def validate", "struct RecordIterator")
         self.assertIn('raise Error("Rust validation panicked")', validate)
         self.assertRegex(validate, r"if Int\(_result\) != 0:[\s\S]*?raise Error")
@@ -908,10 +927,12 @@ class SuccessfulGenerationTests(unittest.TestCase):
         keepalive = iterator.index("_ = Pointer(to=_item)", call)
         status = iterator.index("var _status = Int(_status_value)", keepalive)
         failed = iterator.index('raise Error("Rust iterator panicked")', status)
-        converted = iterator.index("_types.Record(_from_ffi=_item)", failed)
+        reloaded = iterator.index("_runtime._reload_out(_item_ptr)", failed)
+        converted = iterator.index("_types.Record(_from_ffi=_loaded_item)", reloaded)
         self.assertLess(call, keepalive)
         self.assertLess(keepalive, status)
-        self.assertLess(failed, converted)
+        self.assertLess(failed, reloaded)
+        self.assertLess(reloaded, converted)
         self.assertNotIn("List[_types.Record]", iterator)
 
     def test_static_named_constructor_and_free_function_are_rendered(self) -> None:

@@ -1,0 +1,44 @@
+[workspace]
+@AUTHORS@
+channels = [
+    "https://prefix.dev/conda-forge",
+    "https://conda.modular.com/max",
+    "https://repo.prefix.dev/modular-community",
+]
+platforms = @PLATFORMS@
+preview = ["pixi-build"]
+requires-pixi = ">=0.76"
+
+[package]
+name = "@PACKAGE_NAME@"
+version = "@PACKAGE_VERSION@"
+publish = true
+
+[package.build]
+backend = { name = "pixi-build-mojo", version = "0.*", channels = [
+    "https://prefix.dev/pixi-build-backends",
+    "https://prefix.dev/conda-forge",
+] }
+
+[package.build.config.pkg]
+name = "@MOJO_PACKAGE@"
+path = "@MOJO_PACKAGE@"
+
+[package.host-dependencies]
+mojo-compiler = "=@MOJO_VERSION@"
+
+[package.build-dependencies]
+mojo-compiler = "=@MOJO_VERSION@"
+
+[package.run-dependencies]
+mojo-compiler = "=@MOJO_VERSION@"
+
+[dependencies]
+mojo = "=@MOJO_VERSION@"
+"@PACKAGE_NAME@" = { path = "." }
+
+[tasks]
+t = "python3 ci/run_mojo_tests.py"
+examples = "python3 ci/run_examples.py"
+check-generated = "python3 scripts/check_generated.py"
+format = "python3 scripts/format_mojo.py"
