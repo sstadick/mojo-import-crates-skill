@@ -1,0 +1,91 @@
+name: Docs
+
+on:
+  push:
+    branches:
+      - @DEFAULT_BRANCH@
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  MODO_VERSION: 0.11.13
+  MODO_SHA256: fd0215673f9b8417b5d9bacab8c8c60e6063c95de409d3e54e3ddd65a0607b42
+  HUGO_COMMIT: 7d3df9e77fe96fd8a915dd1dffaf466da8e45d0d
+
+jobs:
+  build:
+    name: Build documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the locked Pixi environment
+        uses: prefix-dev/setup-pixi@f00437f565399d418b0acc85936d12c1fb668347 # v0.10.1
+        with:
+          pixi-version: v0.77.1
+          cache: true
+          cache-write: ${{ github.event_name == 'push' && github.ref == 'refs/heads/@DEFAULT_BRANCH@' }}
+          frozen: true
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.24.x
+          cache: false
+
+      - name: Install Modo
+        run: |
+          curl --fail --location --retry 3 \
+            "https://github.com/mlange-42/modo/releases/download/v${MODO_VERSION}/modo-v${MODO_VERSION}-linux-amd64.tar.gz" \
+            --output "${RUNNER_TEMP}/modo.tar.gz"
+          echo "${MODO_SHA256}  ${RUNNER_TEMP}/modo.tar.gz" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/modo.tar.gz" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+
+      - name: Build Hugo with Mojo syntax highlighting
+        run: |
+          git init "${RUNNER_TEMP}/hugo-source"
+          git -C "${RUNNER_TEMP}/hugo-source" remote add origin https://github.com/mlange-42/hugo.git
+          git -C "${RUNNER_TEMP}/hugo-source" fetch --depth 1 origin "${HUGO_COMMIT}"
+          git -C "${RUNNER_TEMP}/hugo-source" checkout --detach FETCH_HEAD
+          go build -C "${RUNNER_TEMP}/hugo-source" -o "${RUNNER_TEMP}/hugo" .
+
+      - name: Generate API documentation and run examples
+        run: |
+          modo build
+          test -n "$(find docs/site/content -type f -name '*.md' -print -quit)"
+
+      - name: Build documentation site
+        run: |
+          "${RUNNER_TEMP}/hugo" --source docs/site --minify
+          test -s docs/site/public/index.html
+
+      - name: Archive generated Markdown
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docs-markdown
+          path: docs/site/content
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Archive generated site
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docs-site
+          path: docs/site/public
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+@DOCS_DEPLOY_JOB@

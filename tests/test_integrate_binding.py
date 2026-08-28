@@ -1161,9 +1161,10 @@ class GeneralIntegrationTests(unittest.TestCase):
                 "--remap-path-prefix=${BUILD_PREFIX}=",
                 "libalpha_time_ffi.so",
                 "libzeta_codec_ffi.dylib",
-                "mojo precompile alpha_time/mojo/alpha_time",
-                'MODULAR_HOME=\\"$PREFIX/share/max\\" \\"$PREFIX/bin/mojo\\" run alpha_time/tests/smoke.mojo',
-                'MODULAR_HOME=\\"$PREFIX/share/max\\" \\"$PREFIX/bin/mojo\\" run zeta_codec/tests/smoke.mojo',
+                'MODULAR_CACHE_DIR="$SRC_DIR/.rust-mojo-cache" mojo precompile alpha_time/mojo/alpha_time',
+                'MODULAR_CACHE_DIR=\\"$SRC_DIR/.rust-mojo-cache\\" MODULAR_HOME=\\"$PREFIX/share/max\\" \\"$PREFIX/bin/mojo\\" run alpha_time/tests/smoke.mojo',
+                'MODULAR_CACHE_DIR=\\"$SRC_DIR/.rust-mojo-cache\\" MODULAR_HOME=\\"$PREFIX/share/max\\" \\"$PREFIX/bin/mojo\\" run zeta_codec/tests/smoke.mojo',
+                'rm -rf "$PREFIX/share/max/cache/.mojo_cache" "$PREFIX/share/max/crashdb" "$PREFIX/share/max/firstActivation"',
                 '"mojo-compiler ==1.0.0"',
                 '"cmake"',
                 '"pkg-config >=0.29"',
@@ -1172,6 +1173,24 @@ class GeneralIntegrationTests(unittest.TestCase):
             ):
                 self.assertIn(value, recipe)
             self.assertEqual(recipe.count('    - "cmake"'), 1)
+            self.assertEqual(
+                recipe.count(
+                    'MODULAR_CACHE_DIR="$SRC_DIR/.rust-mojo-cache" mojo precompile'
+                ),
+                2,
+            )
+            self.assertEqual(
+                recipe.count(
+                    'MODULAR_CACHE_DIR=\\"$SRC_DIR/.rust-mojo-cache\\" '
+                    'MODULAR_HOME=\\"$PREFIX/share/max\\"'
+                ),
+                2,
+            )
+            self.assertEqual(recipe.count("rm -rf "), 1)
+            self.assertLess(
+                recipe.index("zeta_codec/tests/smoke.mojo"),
+                recipe.index("rm -rf "),
+            )
 
             root_manifest = (project / "pixi.toml").read_text(encoding="utf-8")
             self.assertEqual(root_manifest.count('"sample-app-rust-mojo-bindings"'), 3)

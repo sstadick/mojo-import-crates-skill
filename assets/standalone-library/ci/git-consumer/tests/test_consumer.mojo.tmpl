@@ -1,0 +1,11 @@
+from std.testing import TestSuite, assert_true
+
+from @MOJO_PACKAGE@_ci_consumer import dependency_imported
+
+
+def test_git_dependency_imports() raises:
+    assert_true(dependency_imported())
+
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

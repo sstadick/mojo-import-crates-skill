@@ -1,0 +1,34 @@
+# @PACKAGE_NAME@
+
+@AI_DISCLOSURE@
+
+@README_DOC_LINK@
+
+`@PACKAGE_NAME@` is a standalone Mojo library backed by Rust's `@RUST_CRATE@`
+`@RUST_VERSION@`. The initial repository shell proves ordinary Mojo imports;
+the completed binding must replace that proof with its reviewed public API,
+representative examples, and documented semantic limits.
+
+@README_GIT_INSTALL@
+
+## Development
+
+```sh
+pixi install
+pixi run t
+pixi run examples
+pixi run check-generated
+```
+
+Build the root Mojo package and generated Rust-binding source package together:
+
+```sh
+pixi publish --target-dir ./artifacts
+```
+
+## Provenance
+
+The binding is generated from exact Rust source by
+[`bind-rust-to-mojo`](@SKILL_REPOSITORY@/blob/main/SKILL.md). Generated ABI and
+wrapper files are checked against their committed manifests; they are evidence
+for this crate, not templates for another binding.

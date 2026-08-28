@@ -1,0 +1,42 @@
+[workspace]
+channels = [
+    "https://prefix.dev/conda-forge",
+    "https://conda.modular.com/max",
+    "https://repo.prefix.dev/modular-community",
+]
+platforms = ["__CI_PLATFORM__"]
+preview = ["pixi-build"]
+requires-pixi = ">=0.76"
+
+[package]
+name = "@PACKAGE_NAME@-ci-consumer"
+version = "0.1.0"
+
+[package.build]
+backend = { name = "pixi-build-mojo", version = "0.*", channels = [
+    "https://prefix.dev/pixi-build-backends",
+    "https://prefix.dev/conda-forge",
+] }
+
+[package.build.config.pkg]
+name = "@MOJO_PACKAGE@_ci_consumer"
+path = "@MOJO_PACKAGE@_ci_consumer"
+
+[package.host-dependencies]
+mojo-compiler = "=@MOJO_VERSION@"
+
+[package.build-dependencies]
+mojo-compiler = "=@MOJO_VERSION@"
+"@PACKAGE_NAME@" = { git = "__PROJECT_GIT__", rev = "__PROJECT_REV__" }
+
+[package.run-dependencies]
+mojo-compiler = "=@MOJO_VERSION@"
+"@PACKAGE_NAME@" = { git = "__PROJECT_GIT__", rev = "__PROJECT_REV__" }
+
+[dependencies]
+mojo = "=@MOJO_VERSION@"
+"@PACKAGE_NAME@" = { git = "__PROJECT_GIT__", rev = "__PROJECT_REV__" }
+"@PACKAGE_NAME@-ci-consumer" = { path = "." }
+
+[tasks]
+t = "mojo run tests/test_consumer.mojo"

@@ -1,6 +1,6 @@
 ---
 name: bind-rust-to-mojo
-description: Generate, integrate, build, and test a new Rust-to-Mojo binding for an exact crates.io, named-private-registry, or immutable Git Rust crate in an existing Pixi Mojo project; local crates may be inspected but packaging is currently deferred. Use for Rust APIs that must become ordinary Mojo imports, including APIs needing explicit generic specialization or semantic FFI adaptation. Do not use for Mojo-to-Rust bindings.
+description: Generate, integrate, build, and test a new Rust-to-Mojo binding for an exact crates.io, named-private-registry, or immutable Git Rust crate in either an existing Pixi Mojo project or a new standalone pixi-build-mojo library repository; local crates may be inspected but packaging is currently deferred. Use for Rust APIs that must become ordinary Mojo imports, including APIs needing explicit generic specialization or semantic FFI adaptation. Do not use for Mojo-to-Rust bindings.
 ---
 
 # Bind Rust to Mojo
@@ -16,7 +16,9 @@ successful until that invocation's newly generated Rust and Mojo tests pass.
 
 ## Invariants
 
-- Work inside the existing Pixi Mojo project supplied by the user.
+- Work in exactly one target mode: preserve the existing Pixi Mojo project
+  supplied by the user, or create a standalone library only when the user asks
+  for one or clearly supplies an otherwise-empty target for reusable output.
 - Never modify the upstream Rust crate.
 - Resolve the exact requested source with `cargo metadata` before inspecting or
   generating from it.
@@ -35,7 +37,9 @@ successful until that invocation's newly generated Rust and Mojo tests pass.
 - Treat the manifest's closed, exact `[tools]` table as a verified claim: bind
   it to the ABI report, companion Cargo graph, and target Mojo compiler rather
   than copying version strings without checking them.
-- Preserve existing Pixi configuration and let Pixi update `pixi.lock`.
+- Preserve existing Pixi configuration. In standalone mode, create only the
+  reviewed generic repository shell before integration. Let Pixi update
+  `pixi.lock` in either mode.
 - Do not vendor build products, temporary source trees, or environment-specific
   paths.
 
@@ -64,16 +68,37 @@ Set `<skill-root>` to the directory containing this `SKILL.md`. Read the
 [binding manifest schema](references/binding-manifest.md) before generating or
 regenerating a binding.
 
+## Target modes
+
+Choose exactly one mode before changing the target:
+
+- **Existing project:** use the workflow below unchanged when the user supplies
+  a compatible project with `pixi.toml`.
+- **Standalone library:** when the user requests a reusable library repository,
+  read [the standalone-library workflow](references/standalone-library.md) in
+  full. Resolve the requested Rust source, scaffold the otherwise-empty target
+  with `scripts/scaffold_standalone_library.py`, then run the same semantic
+  binding workflow below and complete the standalone productization contract.
+
+Creating a local repository shell does not authorize choosing a license,
+creating a hosted repository, changing repository settings, adding a remote,
+pushing, opening a pull request, or enabling Pages. Do those only when the user
+requests them. Repository coordinates may be used to render hosted CI and docs
+configuration when they are already known.
+
 ## Workflow
 
 ### 1. Validate the target
 
-Locate the project root and verify that it contains `pixi.toml` and a Mojo
-package shape compatible with its pinned tools. Record the initial working-tree
-state. Require one unambiguous exact Mojo compiler constraint so generated
-`.mojoc` files use the same compiler as the root package. Support Linux and
-Apple silicon macOS; clearly distinguish platforms actually tested from
-platforms only generated for.
+Record the initial working-tree state. In existing-project mode, locate the
+project root and verify that it contains `pixi.toml` and a Mojo package shape
+compatible with its pinned tools. In standalone mode, first follow the
+standalone reference to resolve the source, collect the required naming and
+compiler inputs, and create the compatible root package; do not run the
+scaffolder over an existing project. Require one unambiguous exact Mojo compiler
+constraint so generated `.mojoc` files use the same compiler as the root
+package. Support Linux and Apple silicon macOS; clearly distinguish platforms
+actually tested from platforms only generated for.
 
 ### 2. Resolve the source
 
@@ -206,6 +231,9 @@ For a new or semantically changed binding, write one self-contained source file
 with an inline `#[diplomat::bridge]` module, derived from the resolved API and
 manifest. For an unchanged binding, validate the preserved file instead. The
 current backend does not inline an external `mod ffi;` tree.
+Do not place `use std::...` or `use core::...` declarations inside the bridge:
+the backend rejects those as non-FFI type imports. Use fully qualified standard
+library paths within bridge helper bodies instead.
 Generate deterministic, crate-namespaced C symbols. Use opaque ownership
 handles, explicit destructors, panic barriers, and status/out-parameter returns
 where appropriate. Ensure iterator state and owner mutation cannot invalidate
@@ -244,6 +272,8 @@ upstream crate source/checksum/feature audit.
 Give every generated source file a deterministic header naming the resolved
 crate/version, manifest, generator, Diplomat, and Mojo versions. Generate
 cross-language size, alignment, and field-offset tests for each value struct.
+With Mojo 1.0, compute field offsets from runtime pointer-address differences;
+`std.reflection.struct_fields.offset_of` is not available in that toolchain.
 
 ### 6. Generate raw and ergonomic Mojo layers
 
@@ -399,6 +429,11 @@ an installed binary without `pixi run`. Fix generation or backend gaps within
 scope and repeat. If a safe binding remains impossible, stop with a precise
 unsupported report; do not present generated-but-uncompiled code as success.
 
+In standalone mode, binding tests alone are insufficient. Finish and exercise
+the public facade, representative standalone examples, downstream Git consumer,
+strict generated documentation, rendered docs site, and CI/package checks from
+the standalone reference before reporting success.
+
 Three Mojo 1.0 tooling traps invalidate careless verification. `-I` does not
 shadow a package already installed in the Pixi environment, so after changing
 generated wrappers you must reintegrate and `pixi install` before any run
@@ -416,7 +451,10 @@ one of these traps, not FFI overhead.
 Hash or diff generated inputs, rerun from the same manifest, and require no
 source or Pixi diff. Then report source identity, concrete specializations,
 export classification counts, adaptations, tested platforms, import/test
-commands, and deferred APIs.
+commands, and deferred APIs. For a standalone library, also report repository
+coordinates if configured, public facade and example coverage, documentation
+coverage and executable-example counts, downstream Git installation proof, and
+which hosted operations remain intentionally unperformed.
 
 Use the integrator's `--check` mode on the regenerated staging tree; it must
 report no changes.
@@ -429,4 +467,7 @@ failing phase, exact error, changed files, lockfile status, and next action.
 Acceptance cases constrain the general workflow; they do not provide generated
 code. The initial case is declared under `tests/acceptance/rust_lapper/` and
 must travel through the same resolve → inspect → manifest → bridge → backend →
-wrapper → generic integration → test path as every other crate.
+wrapper → generic integration → test path as every other crate. Standalone-mode
+acceptance additionally uses the generic scaffold and completion properties in
+`references/standalone-library.md`; a finished standalone repository is product
+evidence, never a crate-specific production template.

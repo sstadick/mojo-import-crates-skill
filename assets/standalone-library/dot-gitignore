@@ -1,0 +1,12 @@
+# Pixi environments and package builds
+.pixi/
+target/
+artifacts/
+
+# Mojo packages
+*.mojoc
+*.mojopkg
+
+# Python tooling caches
+__pycache__/
+*.py[cod]

@@ -1,0 +1,29 @@
+---
+title: @PACKAGE_NAME@
+type: docs
+---
+
+`@PACKAGE_NAME@` is a standalone Mojo library backed by Rust's `@RUST_CRATE@`
+`@RUST_VERSION@`. Its public package imports as `@MOJO_PACKAGE@` while Pixi
+installs the generated Rust shared library transitively.
+
+@README_GIT_INSTALL@
+
+## Scaffold API proof
+
+This complete program is executed by the documentation build. Replace it with a
+representative public API workflow after the binding facade is complete.
+
+```mojo {doctest="homepage" global=true}
+from @MOJO_PACKAGE@ import import_ready
+
+
+def main():
+    print("@MOJO_PACKAGE@ imported successfully:", import_ready())
+```
+
+## Start here
+
+- [Guides](guide/) contain task-oriented usage documentation.
+- [`@MOJO_PACKAGE@` API reference](@MOJO_PACKAGE@/) is generated from structured
+  source docstrings.

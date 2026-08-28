@@ -1,0 +1,12 @@
+from std.testing import TestSuite, assert_true
+
+from @MOJO_PACKAGE@ import import_ready
+
+
+def test_public_package_imports() raises:
+    # Replace this scaffold proof with real facade behavior tests.
+    assert_true(import_ready())
+
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()
