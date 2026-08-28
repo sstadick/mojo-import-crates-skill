@@ -1,6 +1,6 @@
 ---
 name: bind-rust-to-mojo
-description: Generate, integrate, build, and test a new Rust-to-Mojo binding for an exact crates.io or immutable Git Rust crate in an existing Pixi Mojo project; local crates may be inspected but packaging is currently deferred. Use for Rust APIs that must become ordinary Mojo imports, including APIs needing explicit generic specialization or semantic FFI adaptation. Do not use for Mojo-to-Rust bindings.
+description: Generate, integrate, build, and test a new Rust-to-Mojo binding for an exact crates.io, named-private-registry, or immutable Git Rust crate in an existing Pixi Mojo project; local crates may be inspected but packaging is currently deferred. Use for Rust APIs that must become ordinary Mojo imports, including APIs needing explicit generic specialization or semantic FFI adaptation. Do not use for Mojo-to-Rust bindings.
 ---
 
 # Bind Rust to Mojo
@@ -51,7 +51,11 @@ Pixi artifact workflow. Read
 [Decision 0003](plans/decisions/0003-out-of-tree-diplomat-backend.md) before
 changing the Diplomat/backend boundary. Read
 [Decision 0004](plans/decisions/0004-semantic-projection-source.md) before
-changing the regeneration or semantic-source boundary. Read the rust-lapper files under
+changing the regeneration or semantic-source boundary. Read
+[Decision 0005](plans/decisions/0005-private-registry-and-vendored-upstream.md)
+when the crate lives in a private or alternate Cargo registry. Read
+[Decision 0006](plans/decisions/0006-global-runtime-state.md) before changing
+how wrappers load the library or resolve symbols. Read the rust-lapper files under
 `tests/acceptance/` only when running that explicit acceptance scenario. Do not
 load `original_plan.md` during ordinary binding work; it is historical
 and contains superseded vertical-slice choices.
@@ -84,9 +88,18 @@ target repository. Representative invocations are:
 
 ```text
 python3 <skill-root>/scripts/resolve_rust_crate.py --registry NAME@VERSION
+python3 <skill-root>/scripts/resolve_rust_crate.py --registry NAME@VERSION --registry-name REGISTRY --registry-index INDEX_URL
 python3 <skill-root>/scripts/resolve_rust_crate.py --git URL --rev FULL_COMMIT --package NAME
 python3 <skill-root>/scripts/resolve_rust_crate.py --path PATH [--package NAME]
 ```
+
+An alternate registry is common for corporate crates whose Git mirrors are
+private; check `~/.cargo/credentials` and sibling projects' `.cargo/config.toml`
+for the registry name and index URL, and prefer the registry (with its
+checksum) over a private Git URL as the source of record. Private sources
+additionally require the vendored upstream copy described in Decision 0005,
+because Pixi package builds redirect `HOME`/`CARGO_HOME` and therefore have no
+credentials.
 
 Pass each requested Cargo feature with `--feature`; use
 `--no-default-features` only when requested. Record the checksum or immutable
@@ -123,12 +136,32 @@ fallible functions. Prefer lazy Rust-backed Mojo iterators when a Rust iterator
 can safely expose `next`; materialize a collection only when required and with
 the user’s agreement if semantics or performance materially change.
 
-Mojo 1.0 has no supported runtime-global storage for an `OwnedDLHandle`.
-Opaque wrappers retain their handle, but a direct free/static/value call has no
-owner in which to retain one. For a high-frequency API of that shape, project
-an explicit opaque binding context and expose the operations as its methods.
-If preserving top-level calls matters more than the repeated scoped `dlopen`,
-record that performance effect as a material adaptation and ask the user.
+For a fallible operation whose error message matters (an open or parse), the
+scalar-only ABI cannot raise with dynamic text; project an opaque result
+carrier with `is_ok`, a UTF-8 error accessor, and a single-shot value take.
+Choose Optional versus raising deliberately: Mojo forbids mutating methods on
+rvalues, so a chained `.take()` on an Optional return does not compile and
+callers must bind an lvalue first. Where `None` is a normal outcome (a map
+lookup, an indexed access) return Optional; where `None` means the caller
+broke the contract (taking a value twice, taking after a failed open), map it
+with `optional_none_error` so the getter returns the value directly and
+raises instead.
+
+For "expose every field" requests over a large struct tree, project one
+read-only view opaque per struct: each view retains a shared handle on the
+root parse (for example an `Arc` of the parsed file) plus a raw node pointer,
+so views stay valid independently of parent-view lifetimes without copying.
+Project a payload enum as a fieldless kind discriminant plus per-variant
+payload accessors that return Optional views or Optional payloads.
+
+Mojo 1.0 does support process-wide runtime globals through `std.ffi._Global`
+(the same mechanism `std.python` uses for the CPython interpreter handle).
+The wrapper generator opens the shared library once into such a global and
+resolves every C function pointer exactly once into fields of that global
+state, CPython-style, so a wrapper call costs one named-global lookup plus a
+field read (~10 ns) with no per-call `dlsym`, no per-object `dlopen`, and no
+allocation. These are underscore-private stdlib APIs; re-verify them against
+the target compiler before relying on them for a new Mojo version.
 
 ### 4. Write the semantic inputs
 
@@ -184,7 +217,18 @@ With the pinned Diplomat 0.16.1 macros, put the default namespaced
 In particular, do not rely on a function-level `abi_rename` for a free
 function: the HIR accepts that spelling but the proc macro can leave the
 attribute behind and make the companion crate fail to compile. Method-level
-overrides remain available when the inherited name would collide.
+overrides remain available when the inherited name would collide. An opaque
+type with any `&mut self` method must be declared `#[diplomat::opaque_mut]`,
+not `#[diplomat::opaque]`, or HIR lowering fails.
+
+Strings, options, and bulk numeric access do not need new ABI shapes: keep
+the raw layer scalar/pointer-only and use the wrapper generator's closed
+projections instead. A string crosses as a `<field>_utf8_len` /
+`<field>_utf8_copy(buf_addr, buf_len)` pair (`string_copy`); an optional
+scalar, enum, or string pairs its getter with a boolean `has_` companion
+(`optional_via`) to become a public Mojo `Optional`; a numeric collection
+exposes `len` plus a `fill` function taking a caller-owned mutable span
+(`mutable-primitive-slice`). The manifest reference documents all three.
 
 Format and test the bridge with an external temporary `CARGO_TARGET_DIR` so no
 `target/` appears in vendored source.
@@ -236,8 +280,10 @@ For Mojo 1.0.0 dynamic loading, keep every call boundary to scalars and
 pointers: scalarize a slice as a private address-plus-length pair, pass value
 structs by pointer, and return aggregate values through caller-owned out
 pointers. Reject an ABI that passes or returns a C aggregate by value even if it
-type-checks; real calls can be mislowered. `OwnedDLHandle.get_function` in that
-compiler is parameterized by the return type and infers arguments at the call.
+type-checks; real calls can be mislowered. Wrappers resolve every symbol once
+into the process-global runtime state with `_get_function[symbol, alias]`,
+typed by the raw layer's `def(...) thin abi("C")` aliases (Decision 0006), so
+calls are fully typed against the declared ABI rather than inferred.
 This also excludes Diplomat's two-word owned-slice carrier. Project an owned
 collection as an opaque Rust owner with scalar/pointer accessors and a generated
 destructor instead of wrapping `DiplomatOwnedSlice` directly.
@@ -245,10 +291,12 @@ On a later compiler with an explicit dynamic function type, declare `abi("C")`
 and add a real ABI regression before relaxing this rule. Resolved function
 pointers must not outlive their `OwnedDLHandle`.
 
-Compile a minimal loader call with the target project's pinned compiler before
-emitting the full wrapper. `OwnedDLHandle.get_function` generic syntax has
-changed between Mojo releases; follow the installed compiler and `mojo-syntax`
-skill, not an example written for a different version.
+Compile a minimal loader probe with the target project's pinned compiler
+before emitting the full wrapper: exercise `std.ffi._Global`,
+`OwnedDLHandle._get_function[symbol, alias]`, and one real call through a
+resolved pointer, since these underscore-private APIs and the dynamic-loading
+syntax have changed between Mojo releases. Follow the installed compiler and
+`mojo-syntax` skill, not an example written for a different version.
 
 Then run the closed semantic-wrapper generator. It requires an explicit
 `[[mojo.types]]` entry for every ABI struct, enum, and opaque type, and an
@@ -317,6 +365,16 @@ mode, install shared libraries below `$PREFIX/lib`, and precompile Mojo packages
 below `$PREFIX/lib/mojo`. Preserve the target project’s existing backend and
 configuration. Package correctness must not depend on convenience Pixi tasks.
 
+Package builds are hermetic: rattler-build redirects `HOME` and `CARGO_HOME`
+into the build tree, so no git credentials, keychain, cargo token, or user
+cargo config exist inside the recipe. Anonymous crates.io fetches still work;
+any private index or private Git fetch fails there even when it works in the
+developer shell. For a named-registry crate the integrator emits the registry
+definition as Cargo environment configuration in the recipe commands, and a
+private crate must additionally ship the checksum-verified
+`ffi/vendored/<crate>/` copy wired in through build-time source replacement
+(Decision 0005).
+
 ### 8. Build, test, and repair
 
 Let the project-compatible Pixi executable update its lockfile, build source
@@ -340,6 +398,18 @@ early destruction when relevant, panic/error behavior, and direct execution of
 an installed binary without `pixi run`. Fix generation or backend gaps within
 scope and repeat. If a safe binding remains impossible, stop with a precise
 unsupported report; do not present generated-but-uncompiled code as success.
+
+Three Mojo 1.0 tooling traps invalidate careless verification. `-I` does not
+shadow a package already installed in the Pixi environment, so after changing
+generated wrappers you must reintegrate and `pixi install` before any run
+proves anything. The compiler cache reuses binaries for content-identical
+source files and prints the first-seen path, so an unchanged test file can
+silently run a stale build; trust content changes, not paths. `mojo run`
+executes unoptimized code, so measure performance only with `mojo build`
+binaries. When benchmarking, expect roughly: raw resolved C call ~1 ns,
+generated wrapper call ~10 ns, bulk span fill a few microseconds for tens of
+thousands of elements; a wrapper call costing hundreds of nanoseconds means
+one of these traps, not FFI overhead.
 
 ### 9. Prove regeneration and report
 

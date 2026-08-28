@@ -156,6 +156,22 @@ class ScalarizedParam:
 
 
 @dataclass(frozen=True)
+class StringCopy:
+    """Project a `<len>` + `<copy into caller buffer>` ABI pair as one String."""
+
+    len_symbol: str
+    data_param: str
+    len_param: str
+
+
+@dataclass(frozen=True)
+class OptionalVia:
+    """Project a boolean `has_` companion plus a getter as Optional[T]."""
+
+    has_symbol: str
+
+
+@dataclass(frozen=True)
 class FunctionMapping:
     abi_owner: str | None
     rust_name: str
@@ -167,6 +183,8 @@ class FunctionMapping:
     out_param: str | None
     result: ResultPolicy | None
     optional_none_error: str | None
+    string_copy: StringCopy | None
+    optional_via: OptionalVia | None
     export_id: str | None
 
 
@@ -488,7 +506,12 @@ def _parse_scalarized_params(item: dict[str, Any], label: str) -> tuple[Scalariz
     result: list[ScalarizedParam] = []
     public_names: set[str] = set()
     raw_names: set[str] = set()
-    kinds = {"copied-value-slice", "borrowed-primitive-slice", "utf8-string"}
+    kinds = {
+        "copied-value-slice",
+        "borrowed-primitive-slice",
+        "mutable-primitive-slice",
+        "utf8-string",
+    }
     for index, value in enumerate(raw):
         adapter_label = f"{label}.scalarized_params[{index}]"
         allowed = {"name", "kind", "element", "data_param", "len_param"}
@@ -517,7 +540,10 @@ def _parse_scalarized_params(item: dict[str, Any], label: str) -> tuple[Scalariz
             )
         if kind == "utf8-string" and element != "u_int8":
             raise GenerationError(f"{adapter_label} utf8-string element must be 'u_int8'")
-        if kind == "borrowed-primitive-slice" and element not in _PRIMITIVES:
+        if (
+            kind in {"borrowed-primitive-slice", "mutable-primitive-slice"}
+            and element not in _PRIMITIVES
+        ):
             raise GenerationError(
                 f"{adapter_label} element must be an ABI primitive spelling"
             )
@@ -525,6 +551,38 @@ def _parse_scalarized_params(item: dict[str, Any], label: str) -> tuple[Scalariz
         raw_names.update((data_param, len_param))
         result.append(ScalarizedParam(name, kind, element, data_param, len_param))
     return tuple(result)
+
+
+def _parse_string_copy(item: dict[str, Any], label: str) -> StringCopy | None:
+    value = item.get("string_copy")
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise GenerationError(f"{label}.string_copy must be a table")
+    allowed = {"len_symbol", "data_param", "len_param"}
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise GenerationError(f"{label}.string_copy has unknown keys: {', '.join(unknown)}")
+    len_symbol = _string(value, "len_symbol", f"{label}.string_copy.len_symbol")
+    data_param = _string(value, "data_param", f"{label}.string_copy.data_param")
+    len_param = _string(value, "len_param", f"{label}.string_copy.len_param")
+    if _IDENTIFIER.fullmatch(data_param) is None or _IDENTIFIER.fullmatch(len_param) is None:
+        raise GenerationError(f"{label}.string_copy raw parameter names must be identifiers")
+    if data_param == len_param:
+        raise GenerationError(f"{label}.string_copy data_param and len_param must differ")
+    return StringCopy(len_symbol, data_param, len_param)
+
+
+def _parse_optional_via(item: dict[str, Any], label: str) -> OptionalVia | None:
+    value = item.get("optional_via")
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise GenerationError(f"{label}.optional_via must be a table")
+    unknown = sorted(set(value) - {"has_symbol"})
+    if unknown:
+        raise GenerationError(f"{label}.optional_via has unknown keys: {', '.join(unknown)}")
+    return OptionalVia(_string(value, "has_symbol", f"{label}.optional_via.has_symbol"))
 
 
 def _parse_function_mappings(mojo: dict[str, Any]) -> list[FunctionMapping]:
@@ -553,6 +611,8 @@ def _parse_function_mappings(mojo: dict[str, Any]) -> list[FunctionMapping]:
             "out_param",
             "result",
             "optional_none_error",
+            "string_copy",
+            "optional_via",
             "export",
         }
         unknown = sorted(set(item) - allowed)
@@ -592,11 +652,15 @@ def _parse_function_mappings(mojo: dict[str, Any]) -> list[FunctionMapping]:
         optional_none_error = _optional_string(
             item, "optional_none_error", f"{label}.optional_none_error"
         )
+        string_copy = _parse_string_copy(item, label)
+        optional_via = _parse_optional_via(item, label)
         if kind == "skip" and (
             scalarized_params
             or out_param is not None
             or result_policy is not None
             or optional_none_error is not None
+            or string_copy is not None
+            or optional_via is not None
         ):
             raise GenerationError(f"{label} skipped functions cannot declare adapters")
         if kind == "iterator_next" and (
@@ -604,9 +668,24 @@ def _parse_function_mappings(mojo: dict[str, Any]) -> list[FunctionMapping]:
             or out_param is not None
             or result_policy is not None
             or optional_none_error is not None
+            or string_copy is not None
+            or optional_via is not None
         ):
             raise GenerationError(
                 f"{label} iterator_next adapters belong on its kind=iterator type mapping"
+            )
+        if kind == "constructor" and (string_copy is not None or optional_via is not None):
+            raise GenerationError(
+                f"{label} constructors cannot use string_copy or optional_via"
+            )
+        if (string_copy is not None or optional_via is not None) and (
+            result_policy is not None
+            or out_param is not None
+            or optional_none_error is not None
+        ):
+            raise GenerationError(
+                f"{label} string_copy/optional_via cannot combine with result, "
+                "out_param, or optional_none_error"
             )
         result.append(
             FunctionMapping(
@@ -620,6 +699,8 @@ def _parse_function_mappings(mojo: dict[str, Any]) -> list[FunctionMapping]:
                 out_param,
                 result_policy,
                 optional_none_error,
+                string_copy,
+                optional_via,
                 export_id,
             )
         )
@@ -1527,6 +1608,7 @@ class Model:
         mappings: dict[str, TypeMapping],
     ) -> None:
         iterator_next: dict[str, FunctionMapping] = {}
+        mappings_by_symbol = {mapping.abi_symbol: mapping for mapping in self.functions}
         for mapping in self.functions:
             function = functions[mapping.abi_symbol]
             params = function.get("params")
@@ -1539,6 +1621,9 @@ class Model:
                 continue
             self._validate_function_adapters(
                 mapping, function, definitions, mappings
+            )
+            self._validate_companion_adapters(
+                mapping, function, functions, mappings_by_symbol
             )
             owner_mapping = mappings.get(mapping.abi_owner) if mapping.abi_owner else None
             if mapping.kind == "free":
@@ -1599,6 +1684,9 @@ class Model:
             }
             if mapping.out_param is not None:
                 hidden_params.add(mapping.out_param)
+            if mapping.string_copy is not None:
+                hidden_params.add(mapping.string_copy.data_param)
+                hidden_params.add(mapping.string_copy.len_param)
             public_params = params
             if mapping.kind == "iterator_next":
                 public_params = params[:1]
@@ -1714,6 +1802,114 @@ class Model:
                     f"{mapping.abi_symbol}.optional_none_error requires an optional "
                     "owned opaque return"
                 )
+
+    def _validate_companion_adapters(
+        self,
+        mapping: FunctionMapping,
+        function: dict[str, Any],
+        functions: dict[str, dict[str, Any]],
+        mappings_by_symbol: dict[str, FunctionMapping],
+    ) -> None:
+        """Cross-check string_copy/optional_via companion symbols against the report."""
+
+        u_int = {"kind": "primitive", "details": "u_int"}
+        params = function["params"]
+        base_params = params
+        if mapping.string_copy is not None:
+            adapter = mapping.string_copy
+            names = [param.get("name") for param in params]
+            if (
+                len(names) < 2
+                or names[-2] != adapter.data_param
+                or names[-1] != adapter.len_param
+            ):
+                raise GenerationError(
+                    f"{mapping.abi_symbol} string_copy buffer parameters must be the "
+                    "final two ABI parameters in data,len order"
+                )
+            for raw_name in (adapter.data_param, adapter.len_param):
+                param = next(item for item in params if item.get("name") == raw_name)
+                if param.get("ty") != u_int:
+                    raise GenerationError(
+                        f"{mapping.abi_symbol}.{raw_name} must be primitive u_int for "
+                        "a string_copy buffer parameter"
+                    )
+            if function.get("output") != u_int:
+                raise GenerationError(
+                    f"{mapping.abi_symbol} string_copy requires a u_int copied-length return"
+                )
+            scalarized_raw = {
+                raw_name
+                for item in mapping.scalarized_params
+                for raw_name in (item.data_param, item.len_param)
+            }
+            if {adapter.data_param, adapter.len_param} & scalarized_raw:
+                raise GenerationError(
+                    f"{mapping.abi_symbol} string_copy buffer parameters cannot also "
+                    "be scalarized inputs"
+                )
+            base_params = params[:-2]
+            self._require_companion(
+                mapping,
+                functions,
+                mappings_by_symbol,
+                adapter.len_symbol,
+                base_params,
+                u_int,
+                "string_copy.len_symbol",
+            )
+        if mapping.optional_via is not None:
+            self._require_companion(
+                mapping,
+                functions,
+                mappings_by_symbol,
+                mapping.optional_via.has_symbol,
+                base_params,
+                {"kind": "primitive", "details": "bool"},
+                "optional_via.has_symbol",
+            )
+            if mapping.string_copy is None:
+                kind, _ = _kind(function["output"], f"{mapping.abi_symbol}.output")
+                if kind not in {"primitive", "enum"}:
+                    raise GenerationError(
+                        f"{mapping.abi_symbol} optional_via without string_copy requires "
+                        "a primitive or enum return; optional opaques are already Optional"
+                    )
+
+    def _require_companion(
+        self,
+        mapping: FunctionMapping,
+        functions: dict[str, dict[str, Any]],
+        mappings_by_symbol: dict[str, FunctionMapping],
+        symbol: str,
+        base_params: list[dict[str, Any]],
+        expected_output: dict[str, Any],
+        label: str,
+    ) -> None:
+        companion = functions.get(symbol)
+        if companion is None:
+            raise GenerationError(
+                f"{mapping.abi_symbol} {label} names unknown ABI symbol {symbol!r}"
+            )
+        companion_mapping = mappings_by_symbol.get(symbol)
+        if companion_mapping is None or companion_mapping.kind != "skip":
+            raise GenerationError(
+                f"{mapping.abi_symbol} {label} companion {symbol!r} must be a "
+                "kind=skip internal helper"
+            )
+        if companion.get("owner") != mapping.abi_owner:
+            raise GenerationError(
+                f"{mapping.abi_symbol} {label} companion {symbol!r} has a different owner"
+            )
+        if companion.get("params") != base_params:
+            raise GenerationError(
+                f"{mapping.abi_symbol} {label} companion {symbol!r} must take exactly "
+                "the same parameters (minus the copy buffer pair)"
+            )
+        if companion.get("output") != expected_output:
+            raise GenerationError(
+                f"{mapping.abi_symbol} {label} companion {symbol!r} has the wrong return type"
+            )
 
     def _validate_result_policy(
         self,
@@ -2144,10 +2340,35 @@ def _validate_ffi_aliases(model: Model, body: str) -> None:
 
 def _render_runtime(model: Model) -> str:
     environment = "RUST_MOJO_" + re.sub(r"[^A-Za-z0-9]", "_", model.binding_id).upper() + "_LIBRARY"
-    return _header(model) + f'''\nfrom std.ffi import OwnedDLHandle, external_call
+    entries: list[tuple[str, str]] = []
+    for function in model.report_functions:
+        entries.append(
+            (str(function["abi_name"]), str(function["mojo_abi_alias"]))
+        )
+    for opaque in model.report_opaques:
+        entries.append(
+            (
+                str(opaque["destructor_abi_name"]),
+                str(opaque["destructor_mojo_abi_alias"]),
+            )
+        )
+    entries.sort()
+    state_fields = "\n".join(
+        f"    var {alias}: _ffi.{alias}" for _, alias in entries
+    )
+    null_inits = "\n".join(
+        f"        self.{alias} = _null_fn[_ffi.{alias}]()" for _, alias in entries
+    )
+    resolutions = "\n".join(
+        f'            self.{alias} = lib._get_function["{symbol}", _ffi.{alias}]()'
+        for symbol, alias in entries
+    )
+    return _header(model) + f'''\nfrom std.ffi import OwnedDLHandle, _Global, external_call
 from std.os import getenv
 from std.os.path import dirname, join, realpath
 from std.sys import CompilationTarget, argv
+
+import {model.package}._ffi as _ffi
 
 
 def _library_filename() -> String:
@@ -2242,6 +2463,49 @@ def _open_library() raises -> OwnedDLHandle:
         except:
             pass
     return OwnedDLHandle(filename)
+
+
+def _null_fn[T: TrivialRegisterPassable]() -> T:
+    var zero: UInt = 0
+    return Pointer(to=zero).unsafe_bitcast[T]()[]
+
+
+# The shared library is opened once per process and kept in a named
+# compiler-runtime global, following the pattern std.python uses for the
+# CPython interpreter handle. Every C function pointer is resolved exactly
+# once when the global initializes, so a wrapper call costs one global
+# lookup plus a field read (no per-call dlsym or allocation).
+struct _RuntimeState(Movable):
+    var handle: Optional[OwnedDLHandle]
+    var load_error: String
+{state_fields}
+
+    def __init__(out self):
+        self.load_error = String("")
+        var handle: Optional[OwnedDLHandle] = None
+        try:
+            handle = _open_library()
+        except open_error:
+            self.load_error = String(open_error)
+{null_inits}
+        if handle:
+            ref lib = handle.value()
+{resolutions}
+        self.handle = handle^
+
+
+comptime _LIBRARY_GLOBAL = _Global[
+    StorageType=_RuntimeState,
+    name="rust-mojo-binding/{model.binding_id}",
+    init_fn=_RuntimeState.__init__,
+]
+
+
+def _functions() raises -> Pointer[_RuntimeState, MutUntrackedOrigin]:
+    var state = _LIBRARY_GLOBAL.get_or_create_ptr()
+    if state[].load_error != "":
+        raise Error(state[].load_error)
+    return state
 '''
 
 
@@ -2554,6 +2818,9 @@ def _scalarized_argument_decl(
 ) -> str:
     if adapter.kind == "utf8-string":
         return f"{adapter.name}: String"
+    if adapter.kind == "mutable-primitive-slice":
+        element = _PRIMITIVES[adapter.element]
+        return f"{adapter.name}: MutSpan[{element}, _]"
     if adapter.kind == "borrowed-primitive-slice":
         element = _PRIMITIVES[adapter.element]
     else:
@@ -2776,6 +3043,15 @@ def _function_return_type(
 ) -> str | None:
     output = function["output"]
     kind, details = _kind(output, mapping.abi_symbol + ".output")
+    if mapping.string_copy is not None:
+        return "Optional[String]" if mapping.optional_via is not None else "String"
+    if mapping.optional_via is not None:
+        rendered = (
+            _local_public_type(model, output, mapping.abi_symbol + ".output")
+            if local_types
+            else _public_type(model, output, mapping.abi_symbol + ".output")
+        )
+        return f"Optional[{rendered}]"
     if mapping.result is not None:
         policy = mapping.result
         if policy.out_value:
@@ -2830,11 +3106,19 @@ def _render_callable(
         for adapter in mapping.scalarized_params
         for raw_name in (adapter.data_param, adapter.len_param)
     }
+    string_copy_hidden: set[str] = set()
+    if mapping.string_copy is not None:
+        string_copy_hidden = {
+            mapping.string_copy.data_param,
+            mapping.string_copy.len_param,
+        }
     declarations: list[str] = []
     declared_adapters: set[str] = set()
     for index, param in enumerate(params):
         raw_name = param.get("name")
         if raw_name == mapping.out_param:
+            continue
+        if str(raw_name) in string_copy_hidden:
             continue
         adapter = adapter_by_raw.get(str(raw_name))
         if adapter is not None:
@@ -2881,24 +3165,12 @@ def _render_callable(
         lines.append(indent + "@staticmethod")
     lines.append(indent + signature)
     body_indent = indent + "    "
-    raw_return = _raw_type(output, mapping.abi_symbol + ".output")
     owner_mapping = (
         model.type_by_abi.get(mapping.abi_owner) if mapping.abi_owner else None
     )
-    local_library = mapping.kind in {"free", "named_constructor", "static"} or (
-        mapping.kind == "method"
-        and owner_mapping is not None
-        and owner_mapping.kind == "value"
-    )
-    library_expr = "_library" if local_library else "self._library"
-    if mapping.kind == "constructor":
-        lines.append(body_indent + "self._library = _runtime._open_library()")
-    elif local_library:
-        lines.append(body_indent + "var _library = _runtime._open_library()")
     lines.append(
         body_indent
-        + f'var _call = {library_expr}.get_function[{raw_return}]'
-        + f'("{mapping.abi_symbol}")'
+        + f"var _call = _runtime._functions()[].{function['mojo_abi_alias']}"
     )
     arguments: list[str] = []
     keepalives: list[str] = []
@@ -2922,6 +3194,8 @@ def _render_callable(
     prepared_adapters: dict[str, dict[str, str]] = {}
     for index, param in enumerate(params):
         raw_name = str(param.get("name"))
+        if raw_name in string_copy_hidden:
+            continue
         adapter = adapter_by_raw.get(raw_name)
         if adapter is not None:
             expressions = prepared_adapters.get(adapter.name)
@@ -2961,6 +3235,65 @@ def _render_callable(
         lines.extend(body_indent + line for line in pre)
         arguments.append(expression)
         keepalives.extend(post)
+    if mapping.string_copy is not None or mapping.optional_via is not None:
+        base_arguments = ", ".join(arguments)
+        if mapping.optional_via is not None:
+            has_alias = model.report_function(mapping.optional_via.has_symbol)[
+                "mojo_abi_alias"
+            ]
+            lines.append(
+                body_indent
+                + f"var _has_call = _runtime._functions()[].{has_alias}"
+            )
+            lines.append(body_indent + f"var _has = _has_call({base_arguments})")
+            lines.append(body_indent + "if not _has:")
+            for item in keepalives:
+                lines.append(body_indent + "    " + item)
+            lines.append(body_indent + "    return None")
+        if mapping.string_copy is not None:
+            adapter = mapping.string_copy
+            len_alias = model.report_function(adapter.len_symbol)[
+                "mojo_abi_alias"
+            ]
+            lines.append(
+                body_indent
+                + f"var _len_call = _runtime._functions()[].{len_alias}"
+            )
+            lines.append(body_indent + f"var _expected_len = _len_call({base_arguments})")
+            lines.append(
+                body_indent
+                + "var _out_bytes = List[UInt8](unsafe_uninit_length=Int(_expected_len))"
+            )
+            lines.append(
+                body_indent + "var _out_span = Span(_out_bytes)"
+            )
+            copy_arguments = arguments + [
+                "UInt(Int(_out_span.unsafe_ptr()))",
+                "UInt(len(_out_span))",
+            ]
+            lines.append(
+                body_indent + f"var _written = _call({', '.join(copy_arguments)})"
+            )
+            for item in keepalives:
+                lines.append(body_indent + item)
+            lines.append(body_indent + "_ = len(_out_bytes)")
+            lines.append(body_indent + "if _written != _expected_len:")
+            lines.append(
+                body_indent
+                + "    raise Error("
+                + json.dumps(f"FFI string copy length mismatch in {mapping.mojo_name}")
+                + ")"
+            )
+            lines.append(
+                body_indent + "var _out_string = String(from_utf8=Span(_out_bytes))"
+            )
+            lines.append(body_indent + "return _out_string^")
+        else:
+            lines.append(body_indent + f"var _value = _call({base_arguments})")
+            for item in keepalives:
+                lines.append(body_indent + item)
+            lines.append(body_indent + "return _value")
+        return lines
     call = f"_call({', '.join(arguments)})"
     if mapping.kind == "constructor":
         kind, details = _kind(output, mapping.abi_symbol + ".output")
@@ -3056,18 +3389,21 @@ def _render_opaque(model: Model, mapping: TypeMapping) -> list[str]:
                 "    comptime IteratorOwnedType = Self",
             ]
         )
+    _, opaque_definition = model.report_type(mapping.abi_name)
+    destroy_alias = opaque_definition.get("destructor_mojo_abi_alias")
+    if not isinstance(destroy_alias, str):
+        raise GenerationError(
+            f"ABI report opaque {mapping.abi_name!r} lacks destructor_mojo_abi_alias"
+        )
     lines.extend(
         [
             f"    var _handle: _ffi.{raw}OptionalHandle",
-            "    var _library: OwnedDLHandle",
             "",
-            f"    def __init__(out self, *, _from_abi: _ffi.{raw}Handle) raises:",
-            "        self._library = _runtime._open_library()",
+            f"    def __init__(out self, *, _from_abi: _ffi.{raw}Handle):",
             "        self._handle = _from_abi",
             "",
             "    def __init__(out self, *, deinit move: Self):",
             "        self._handle = move._handle^",
-            "        self._library = move._library^",
             "",
             "    def _require_handle(self) raises -> _ffi." + raw + "Handle:",
             "        if not self._handle:",
@@ -3077,7 +3413,7 @@ def _render_opaque(model: Model, mapping: TypeMapping) -> list[str]:
             "    def __deinit__(deinit self):",
             "        if self._handle:",
             "            try:",
-            f'                var _destroy = self._library.get_function[NoneType]("{mapping.destroy_abi_symbol}")',
+            f"                var _destroy = _runtime._functions()[].{destroy_alias}",
             "                _destroy(self._handle.unsafe_value())",
             "            except:",
             "                abort()",
@@ -3119,7 +3455,7 @@ def _render_opaque(model: Model, mapping: TypeMapping) -> list[str]:
             lines.extend(
                 [
                     f"        var _step = {_zero_ffi_expr(model, step_ty, mapping.abi_name + '.step')}",
-                    f'        var _next = self._library.get_function[{_raw_type(function["output"], iterator_next.abi_symbol + ".output")}]("{iterator_next.abi_symbol}")',
+                    f"        var _next = _runtime._functions()[].{function['mojo_abi_alias']}",
                     "        _step = _next(_handle)",
                     f"        var _status = Int(_step.{status_field})",
                     f"        if _status == {mapping.finished_discriminant}:",
@@ -3160,7 +3496,7 @@ def _render_opaque(model: Model, mapping: TypeMapping) -> list[str]:
                 [
                     f"        var _item = {_zero_ffi_expr(model, item_ty, mapping.abi_name + '.item')}",
                     f"        var _status_value = {raw_status}(0)",
-                    f'        var _next = self._library.get_function[{raw_status}]("{iterator_next.abi_symbol}")',
+                    f"        var _next = _runtime._functions()[].{function['mojo_abi_alias']}",
                     "        _status_value = _next(",
                     "            _handle,",
                     "            Pointer(to=_item).unsafe_origin_cast[MutUntrackedOrigin](),",

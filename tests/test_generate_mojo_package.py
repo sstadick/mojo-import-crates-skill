@@ -817,20 +817,28 @@ class SuccessfulGenerationTests(unittest.TestCase):
         self.assertNotIn("_handle = None", owner)
         self.assertIn("def __deinit__(deinit self):", owner)
         self.assertIn(
-            f'get_function[NoneType]("{PREFIX}owner_destroy")', owner
+            "var _destroy = _runtime._functions()[].Owner_destroy_abi", owner
         )
         self.assertIn("_destroy(self._handle.unsafe_value())", owner)
         self.assertIn("abort()", owner)
         self.assertNotIn("Copyable", owner.splitlines()[0])
 
-    def test_runtime_lookups_use_return_type_only(self) -> None:
+    def test_runtime_lookups_use_cached_typed_function_table(self) -> None:
         generated = self.files["_types.mojo"] + self.files["_wrappers.mojo"]
-        self.assertIn(f'get_function[UInt]("{PREFIX}owner_len")', generated)
+        runtime = self.files["_runtime.mojo"]
+        self.assertIn("_runtime._functions()[].Owner_len_abi", generated)
         self.assertIn(
-            f'get_function[_ffi.ResultStatus]("{PREFIX}owner_summary")', generated
+            "_runtime._functions()[].Owner_summary_abi", generated
         )
-        self.assertNotRegex(generated, r"get_function\[_ffi\.[A-Za-z0-9_]+_abi\]")
-        self.assertNotIn("Owner_len_abi", generated)
+        self.assertNotIn("get_function[", generated)
+        self.assertIn(
+            f'lib._get_function["{PREFIX}owner_len", _ffi.Owner_len_abi]()',
+            runtime,
+        )
+        self.assertIn(
+            f'lib._get_function["{PREFIX}owner_summary", _ffi.Owner_summary_abi]()',
+            runtime,
+        )
 
     def test_runtime_lookup_uses_the_canonical_process_executable(self) -> None:
         runtime = self.files["_runtime.mojo"]

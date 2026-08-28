@@ -363,6 +363,7 @@ def _audit_cargo_graph(
     crate_checksum: str | None,
     crate_git: str | None,
     crate_rev: str | None,
+    crate_registry_index: str | None = None,
     features: list[str],
     default_features: bool,
     ffi_crate: str,
@@ -639,6 +640,14 @@ def _audit_cargo_graph(
         if not locked_source.startswith("registry+"):
             raise IntegrationError(
                 f"{cargo_lock} upstream source is not a registry source"
+            )
+        if (
+            crate_registry_index is not None
+            and locked_source != f"registry+{crate_registry_index.removeprefix('sparse+')}"
+            and locked_source != f"registry+{crate_registry_index}"
+        ):
+            raise IntegrationError(
+                f"{cargo_lock} upstream source does not match [crate].registry_index"
             )
         if locked_upstream.get("checksum") != crate_checksum:
             raise IntegrationError(
@@ -920,6 +929,8 @@ def validate_binding_root(root: Path) -> dict[str, Any]:
     crate_checksum = crate.get("checksum")
     crate_git = crate.get("git")
     crate_rev = crate.get("rev")
+    crate_registry = crate.get("registry")
+    crate_registry_index = crate.get("registry_index")
     if source_kind == "registry":
         if not isinstance(crate_checksum, str) or re.fullmatch(
             r"[0-9a-f]{64}", crate_checksum
@@ -929,6 +940,28 @@ def validate_binding_root(root: Path) -> dict[str, Any]:
             )
         if crate_git is not None or crate_rev is not None:
             raise IntegrationError("Registry [crate] must not set git or rev")
+        if (crate_registry is None) != (crate_registry_index is None):
+            raise IntegrationError(
+                "[crate].registry and [crate].registry_index must be set together"
+            )
+        if crate_registry is not None:
+            if not isinstance(crate_registry, str) or re.fullmatch(
+                r"[a-z][a-z0-9_-]*", crate_registry
+            ) is None:
+                raise IntegrationError(
+                    "[crate].registry must be a lowercase Cargo registry name"
+                )
+            if not isinstance(crate_registry_index, str) or not (
+                crate_registry_index.startswith("https://")
+                or crate_registry_index.startswith("sparse+https://")
+            ):
+                raise IntegrationError(
+                    "[crate].registry_index must be an https or sparse+https index URL"
+                )
+    elif crate_registry is not None or crate_registry_index is not None:
+        raise IntegrationError(
+            "[crate].registry settings are only valid for registry sources"
+        )
     else:
         if not isinstance(crate_git, str) or not crate_git:
             raise IntegrationError("Git [crate].git must be a non-empty URL")
@@ -968,6 +1001,36 @@ def validate_binding_root(root: Path) -> dict[str, Any]:
             "the aggregate recipe always builds with --locked"
         )
 
+    # A registry binding may carry a checksum-verified copy of the upstream
+    # crate so hermetic package builds need no registry credentials. The copy
+    # participates only through Cargo source replacement; the declared source
+    # identity (registry + checksum) is unchanged.
+    vendored_upstream: str | None = None
+    vendored_candidate = cargo_path.parent / "vendored"
+    if vendored_candidate.is_dir():
+        if crate_registry is None:
+            raise IntegrationError(
+                "ffi/vendored is only supported for named-registry crate sources"
+            )
+        vendored_checksum_path = (
+            vendored_candidate / crate_name / ".cargo-checksum.json"
+        )
+        try:
+            vendored_checksum = json.loads(
+                vendored_checksum_path.read_text(encoding="utf-8")
+            ).get("package")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise IntegrationError(
+                f"Cannot read vendored upstream checksum {vendored_checksum_path}: {error}"
+            ) from error
+        if vendored_checksum != crate_checksum:
+            raise IntegrationError(
+                "Vendored upstream package checksum does not match [crate].checksum"
+            )
+        vendored_upstream = (
+            PurePosixPath(cargo_manifest).parent / "vendored"
+        ).as_posix()
+
     ffi_tests_value = ffi.get("tests")
     if not isinstance(ffi_tests_value, list) or not ffi_tests_value:
         raise IntegrationError("[ffi].tests must be a non-empty array of relative paths")
@@ -996,6 +1059,7 @@ def validate_binding_root(root: Path) -> dict[str, Any]:
         crate_checksum=crate_checksum,
         crate_git=crate_git,
         crate_rev=crate_rev,
+        crate_registry_index=crate_registry_index,
         features=crate_features,
         default_features=default_features,
         ffi_crate=ffi_crate,
@@ -1038,6 +1102,9 @@ def validate_binding_root(root: Path) -> dict[str, Any]:
         "crate_checksum": crate_checksum,
         "crate_git": crate_git,
         "crate_rev": crate_rev,
+        "crate_registry": crate_registry,
+        "crate_registry_index": crate_registry_index,
+        "vendored_upstream": vendored_upstream,
         "ffi_crate": ffi_crate,
         "cargo_manifest": cargo_manifest,
         "cargo_lock": cargo_graph["cargo_lock"],
@@ -1489,6 +1556,9 @@ def _binding_provenance(
     }
     if spec["source_kind"] == "registry":
         crate_identity["checksum"] = spec["crate_checksum"]
+        if spec.get("crate_registry"):
+            crate_identity["registry"] = spec["crate_registry"]
+            crate_identity["registry_index"] = spec["crate_registry_index"]
     else:
         crate_identity["git"] = spec["crate_git"]
         crate_identity["rev"] = spec["crate_rev"]
@@ -1876,6 +1946,28 @@ def render_recipe(
         "  script:",
         '    - mkdir -p "$PREFIX/lib" "$PREFIX/lib/mojo" .rust-mojo-target',
     ]
+    replacements = [
+        (
+            spec["id"],
+            spec["crate_registry_index"],
+            f"{spec['id']}/{spec['vendored_upstream']}",
+        )
+        for spec in sorted(specs, key=lambda item: item["id"])
+        if spec.get("crate_registry") and spec.get("vendored_upstream")
+    ]
+    if replacements:
+        # Redirect each vendored upstream registry source to its in-tree copy
+        # so hermetic builds never fetch a private index.
+        lines.append("    - mkdir -p .cargo")
+        for binding_id, index_url, directory in replacements:
+            command = (
+                "printf '[source.%s-upstream]\\nregistry = \"%s\"\\n"
+                "replace-with = \"%s-vendored\"\\n\\n"
+                "[source.%s-vendored]\\ndirectory = \"%s\"\\n\\n' "
+                f"'{binding_id}' '{index_url}' '{binding_id}' '{binding_id}' "
+                f"'{directory}' >> .cargo/config.toml"
+            )
+            lines.append("    - " + json.dumps(command))
     for spec in sorted(specs, key=lambda item: item["id"]):
         binding_id = spec["id"]
         manifest = f"{binding_id}/{spec['cargo_manifest']}"
@@ -1883,9 +1975,23 @@ def render_recipe(
         ffi_crate = spec["ffi_crate"]
         mojo_source = f"{binding_id}/{spec['mojo_source']}"
         mojo_package = spec["mojo_package"]
+        # An alternate registry is declared through Cargo's environment-based
+        # configuration so the closed aggregate build context needs no extra
+        # config files. Fetching a private index/crate additionally requires
+        # the builder's own git credentials and cargo token.
+        cargo_env = ""
+        if spec.get("crate_registry"):
+            registry_env = re.sub(r"[^A-Za-z0-9]", "_", spec["crate_registry"]).upper()
+            cargo_env = (
+                f'CARGO_REGISTRIES_{registry_env}_INDEX='
+                f'"{spec["crate_registry_index"]}" '
+                "CARGO_NET_GIT_FETCH_WITH_CLI=true "
+                'CARGO_REGISTRY_GLOBAL_CREDENTIAL_PROVIDERS="cargo:token" '
+            )
         for test_target in spec["rust_test_targets"]:
             test_command = (
-                'RUSTFLAGS="${RUSTFLAGS:-} '
+                cargo_env
+                + 'RUSTFLAGS="${RUSTFLAGS:-} '
                 "--remap-path-prefix=${SRC_DIR}=/usr/src/rust-mojo-bindings "
                 "--remap-path-prefix=${BUILD_PREFIX}=/usr/src/rust-build-prefix\" "
                 f"cargo test --release --locked --manifest-path {manifest} "
@@ -1900,7 +2006,7 @@ def render_recipe(
             )
         lines.extend(
             [
-                "    - RUSTFLAGS=\"${RUSTFLAGS:-} "
+                f"    - {cargo_env}" + "RUSTFLAGS=\"${RUSTFLAGS:-} "
                 "--remap-path-prefix=${SRC_DIR}=/usr/src/rust-mojo-bindings "
                 "--remap-path-prefix=${BUILD_PREFIX}=/usr/src/rust-build-prefix\" "
                 f"cargo build --release --locked --manifest-path {manifest} "
@@ -2145,6 +2251,9 @@ def _provenance_identity(spec: dict[str, Any]) -> dict[str, Any]:
     }
     if spec["source_kind"] == "registry":
         identity["checksum"] = spec["crate_checksum"]
+        if spec.get("crate_registry"):
+            identity["registry"] = spec["crate_registry"]
+            identity["registry_index"] = spec["crate_registry_index"]
     else:
         identity["git"] = spec["crate_git"]
         identity["rev"] = spec["crate_rev"]

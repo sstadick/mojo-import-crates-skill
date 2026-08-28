@@ -63,6 +63,32 @@ git = "https://github.com/example/example-crate.git"
 rev = "0123456789abcdef0123456789abcdef01234567"
 ```
 
+A crate from a named alternate registry keeps `source_kind = "registry"` and
+its checksum, and additionally declares the registry identity:
+
+```toml
+[crate]
+name = "example-crate"
+version = "=11.2.0"
+source_kind = "registry"
+features = []
+default_features = true
+checksum = "<64-lowercase-hex registry checksum>"
+registry = "companyreg"
+registry_index = "https://git.example.com/org/crate-index.git"
+```
+
+Both keys are required together and only for registry sources. The integrator
+requires the locked upstream source to match the declared index, passes the
+registry definition to recipe builds as Cargo environment configuration, and
+— because hermetic Pixi builds have no credentials — supports an optional
+checksum-verified copy of exactly the upstream crate at
+`ffi/vendored/<crate-name>/` in `cargo vendor` layout. Its
+`.cargo-checksum.json` `package` hash must equal `[crate].checksum`; strip any
+`.cargo` directory from the published crate contents. The copy participates
+only through build-time source replacement, so the declared dependency,
+lockfile, and provenance still name the registry (Decision 0005).
+
 Local-path resolution is supported for inspection, but packaging is deferred
 until the generator can create and validate a self-contained source snapshot.
 
@@ -394,6 +420,10 @@ Supported scalarized kinds are:
   the duration of the call; `element` is an ABI type name.
 - `borrowed-primitive-slice`: borrow an immutable Mojo span for the call;
   `element` is an ABI primitive spelling such as `u_int8`.
+- `mutable-primitive-slice`: borrow a caller-owned mutable Mojo span
+  (`MutSpan[...]`) the bridge fills; `element` is an ABI primitive spelling.
+  This is the bulk-output path: pair it with a `usize` copied-count return and
+  a separate `_len` getter so callers can size the span first.
 - `utf8-string`: borrow `String.as_bytes()` for the call and require
   `element = "u_int8"`.
 
@@ -404,6 +434,61 @@ raw-address Mojo API. Because converting a Mojo pointer to an integer severs
 origin tracking, generated code must make an explicit post-call use of every
 String/span/list that backs such an address. Apply the same keepalive rule to
 local ABI values passed through untracked pointers.
+
+### String returns (`string_copy`)
+
+Strings cross the scalar-only ABI as a length/copy pair of bridge functions:
+`<field>_utf8_len(...) -> usize` plus `<field>_utf8_copy(..., buf_data: usize,
+buf_len: usize) -> usize` returning the copied byte count (clamped to the
+buffer; a short buffer yields a valid truncated prefix). Map the copy function
+publicly and skip the length companion:
+
+```toml
+[[mojo.functions]]
+abi_owner = "RunInfoView"
+rust_name = "project_name_utf8_copy"
+abi_symbol = "rust_mojo__example__RunInfoView_project_name_utf8_copy"
+mojo_name = "project_name"
+kind = "method"
+string_copy = { len_symbol = "rust_mojo__example__RunInfoView_project_name_utf8_len", data_param = "buf_data", len_param = "buf_len" }
+export = "run-info.project-name"
+```
+
+The buffer pair must be the final two ABI parameters (data then length), both
+`u_int`, and the copy function must return `u_int`. The `len_symbol` companion
+must be a `kind = "skip"` mapping with the same owner, exactly the base
+parameters (everything except the buffer pair), and a `u_int` return. The
+generated wrapper reads the length, allocates the Mojo `String`, performs one
+copy call, and raises on a length mismatch. `string_copy` cannot combine with
+`result`, `out_param`, or `optional_none_error`.
+
+### Optional projections (`optional_via`)
+
+An optional scalar, enum, or string pairs its getter with a boolean presence
+companion and becomes a public Mojo `Optional`:
+
+```toml
+[[mojo.functions]]
+abi_owner = "RunInfoView"
+rust_name = "run_uuid_utf8_copy"
+abi_symbol = "rust_mojo__example__RunInfoView_run_uuid_utf8_copy"
+mojo_name = "run_uuid"
+kind = "method"
+string_copy = { len_symbol = "rust_mojo__example__RunInfoView_run_uuid_utf8_len", data_param = "buf_data", len_param = "buf_len" }
+optional_via = { has_symbol = "rust_mojo__example__RunInfoView_has_run_uuid" }
+export = "run-info.run-uuid"
+```
+
+The `has_symbol` companion must be a `kind = "skip"` mapping with the same
+owner, the same base parameters as the public getter, and a `bool` return.
+The wrapper calls it first and returns `None` without touching the getter when
+it reports absence. Without `string_copy`, `optional_via` requires a primitive
+or enum return; optional opaque returns are already `Optional` natively and
+must not declare it. Indexed access uses the same shape with an `in_range`
+companion. Choose `optional_via` when `None` is a normal outcome; when `None`
+means a broken contract (a value taken twice), prefer `optional_none_error` on
+an optional opaque return so the getter raises — Mojo cannot chain `.take()`
+on an rvalue `Optional`, so needless Optionals are unergonomic.
 
 ### Scalar status and aggregate out values
 

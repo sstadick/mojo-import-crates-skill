@@ -119,10 +119,13 @@ def dependency_table(
     git: str | None = None,
     rev: str | None = None,
     default_features: bool = True,
+    registry_name: str | None = None,
 ) -> str:
     fields = [f"package = {toml_string(package_name)}"]
     if version is not None:
         fields.append(f"version = {toml_string('=' + version)}")
+    if registry_name is not None:
+        fields.append(f"registry = {toml_string(registry_name)}")
     if path is not None:
         fields.append(f"path = {toml_string(str(path.resolve()))}")
     if git is not None:
@@ -212,11 +215,14 @@ def cargo_metadata(
     if offline:
         command.append("--offline")
     try:
+        # Run from the probe directory so its .cargo/config.toml (alternate
+        # registry definitions) participates in Cargo's config discovery.
         completed = subprocess.run(
             command,
             check=True,
             capture_output=True,
             text=True,
+            cwd=manifest_path.parent,
         )
         version = subprocess.run(
             [cargo, "--version"], check=True, capture_output=True, text=True
@@ -309,6 +315,12 @@ def resolve(args: argparse.Namespace) -> dict[str, Any]:
         raise ResolveError(f"Cannot find Cargo executable {args.cargo!r}")
 
     features = sorted(set(args.feature))
+    if (args.registry_name is None) != (args.registry_index is None):
+        raise ResolveError(
+            "--registry-name and --registry-index must be provided together"
+        )
+    if args.registry_name is not None and not args.registry:
+        raise ResolveError("--registry-name applies only to --registry requests")
     if args.registry:
         package_name, requested_version = parse_registry_spec(args.registry)
         request: dict[str, Any] = {
@@ -316,11 +328,15 @@ def resolve(args: argparse.Namespace) -> dict[str, Any]:
             "name": package_name,
             "version": requested_version,
         }
+        if args.registry_name is not None:
+            request["registry"] = args.registry_name
+            request["registry_index"] = args.registry_index
         dependency = dependency_table(
             package_name=package_name,
             version=requested_version,
             features=features,
             default_features=not args.no_default_features,
+            registry_name=args.registry_name,
         )
     elif args.path:
         if args.path.is_symlink():
@@ -382,6 +398,14 @@ def resolve(args: argparse.Namespace) -> dict[str, Any]:
         (probe / "src" / "lib.rs").write_text(
             "// Cargo metadata resolution probe.\n", encoding="utf-8"
         )
+        if args.registry_name is not None:
+            (probe / ".cargo").mkdir()
+            (probe / ".cargo" / "config.toml").write_text(
+                f"[registries.{args.registry_name}]\n"
+                f"index = {toml_string(args.registry_index)}\n\n"
+                "[net]\ngit-fetch-with-cli = true\n",
+                encoding="utf-8",
+            )
         manifest_path = probe / "Cargo.toml"
         manifest_path.write_text(resolver_manifest(dependency), encoding="utf-8")
         metadata, cargo_version = cargo_metadata(cargo, manifest_path, args.offline)
@@ -462,6 +486,14 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--registry", metavar="NAME@VERSION")
     source.add_argument("--path", type=Path)
     source.add_argument("--git")
+    parser.add_argument(
+        "--registry-name",
+        help="Alternate Cargo registry name for --registry requests",
+    )
+    parser.add_argument(
+        "--registry-index",
+        help="Index URL for --registry-name; written to the probe's cargo config",
+    )
     parser.add_argument("--rev", help="Immutable Git revision; required with --git")
     parser.add_argument("--package", help="Package name for Git/workspace path requests")
     parser.add_argument("--feature", action="append", default=[])

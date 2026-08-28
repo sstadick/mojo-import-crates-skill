@@ -28,26 +28,31 @@ checked in.
 That demonstrates the general workflow, not universal Rust API coverage.
 Expect Codex to extend or repair the semantic projection or HIR backend when a
 new crate needs a Rust shape outside the current scalar/pointer, value,
-opaque-owner, scalar-status/out-value, scalarized-input, and lazy-iterator
-surface. A run is successful only when its newly generated Rust and Mojo
+opaque-owner, scalar-status/out-value, scalarized-input, string-copy,
+optional-via-presence, mutable-span-fill, and lazy-iterator surface. A run is successful only when its newly generated Rust and Mojo
 integration tests pass; generated files alone do not constitute support.
 
-Mojo 1.0 does not provide a supported runtime-global store for an RAII dynamic
-library handle. Opaque owners and iterators retain one handle across their
-methods, while a directly projected free/static/value call currently opens a
-scoped handle for that call. For a high-frequency free-function API, the skill
-must instead project an explicit opaque binding context whose methods retain
-the handle, or obtain the user's approval for the per-call overhead. This is a
-performance/API-shape constraint, not a license to hide repeated loading.
+Mojo 1.0 does provide process-global runtime storage through
+`std.ffi._Global`, the mechanism `std.python` uses for the CPython handle.
+The wrapper generator opens the shared library once into such a global and
+resolves every C function pointer exactly once into fields of that global
+state (Decision 0006). Wrapper calls cost one named-global lookup plus a
+field read — roughly 10 ns against ~1 ns for the raw C call — with no
+per-object `dlopen` and no per-call `dlsym`. `_Global` and
+`OwnedDLHandle._get_function` are underscore-private stdlib APIs validated
+against Mojo 1.0.0; probe them before trusting a new compiler release.
 
-Linux x86-64 has been executed. Linux AArch64 and Apple-silicon macOS package
-branches, `.dylib` handling, and lock resolution are generated, but native
-macOS validation remains for the user's Mac before macOS is claimed complete.
+Linux x86-64 has been executed, and Apple-silicon macOS has been validated
+end to end (build, install, publish, external-prefix install) by a real
+private-registry binding. Linux AArch64 package branches and lock resolution
+are generated but not natively executed.
 
-Exact crates.io and immutable Git resolution are implemented. Local workspaces
-can be inspected, but the initial package integrator must reject a local-path
-dependency until that source is captured inside a self-contained package graph;
-it must not emit a binding that works only from one checkout.
+Exact crates.io, named-alternate-registry (including private registries with
+the vendored upstream copy of Decision 0005), and immutable Git resolution are
+implemented. Local workspaces can be inspected, but the initial package
+integrator must reject a local-path dependency until that source is captured
+inside a self-contained package graph; it must not emit a binding that works
+only from one checkout.
 
 `rust-lapper` 1.3.0 is a pinned acceptance scenario for developing and
 evaluating the general workflow. It is not the default implementation, a list
